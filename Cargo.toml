@@ -1,0 +1,16 @@
+[package]
+name = "proto_os"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bootloader = "0.9.23"
+volatile = "0.2.6"
+spin = "0.5.2"
+
+[dependencies.lazy_static]
+version = "1.4.0"
+features = ["spin_no_std"]
+
+[package.metadata.bootimage]
+run-args = ["-serial", "stdio"]
