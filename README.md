@@ -1,17 +1,10 @@
 # proto-os
 
-![](imagem.jpg)
-
-Muita gente me pede dicas para construir interpretador, distro de linux e outras coisas mais. Do nada, me perguntaram se é possível construir um **sistema operacional** do zero. E em **Rust**.
-
-Claro que é. Mas não é uma coisa rápida nem simples... Calma que isso aqui é só o começo!
-
-## Toda grande jornada começa com um pequeno passo
-
-Vamos começar com uma demonstração mínima de "programação sem sistema operacional" em Rust:
-um binário que dá boot direto via BIOS em uma máquina virtual QEMU e escreve
-texto na tela usando o buffer de vídeo VGA, sem nenhum sistema operacional
-por baixo.
+Uma demonstração mínima de "programação sem sistema operacional" em Rust:
+um binário que dá boot direto via BIOS em uma máquina virtual QEMU, escreve
+texto na tela usando o buffer de vídeo VGA e lê o teclado via interrupção de
+hardware (IRQ1) para alimentar um prompt de comandos mínimo — sem nenhum
+sistema operacional por baixo.
 
 Se você nunca viu como um kernel/bootloader funciona, leia também o
 [`WALKTHROUGH.md`](./WALKTHROUGH.md) — ele explica o que está acontecendo
@@ -106,20 +99,46 @@ Isso vai: compilar o kernel para o target bare-metal customizado deste
 projeto (`x86_64-proto_os.json`), gerar uma imagem de boot com `bootimage`,
 e abrir uma janela do QEMU que dá boot via BIOS direto nesse binário. Em
 poucos segundos você deve ver uma tela de texto colorida com uma mensagem
-de boas-vindas — não um terminal comum.
+de boas-vindas, seguida de um prompt `proto-os> ` pronto para digitação —
+não um terminal comum.
 
-Para encerrar a demonstração, feche a janela do QEMU. Isso é o fim normal
-da execução, não um erro.
+Clique na janela do QEMU para garantir que ela tem o foco do teclado e
+digite um comando. O layout de teclado suportado é **US QWERTY, somente
+ASCII** — não há suporte a acentuação, ABNT2 ou outros layouts.
+
+### Comandos disponíveis
+
+| Comando | O que faz |
+|---|---|
+| `help` | Lista os comandos disponíveis |
+| `clear` | Limpa a tela e reposiciona o prompt no topo |
+| `echo <texto>` | Escreve `<texto>` na linha seguinte |
+| `sobre` | Mostra uma descrição curta do proto-os |
+| `panic` | Dispara um panic proposital (mesma tela de erro do tratamento de panic) |
+
+Backspace apaga o último caractere digitado; Enter executa a linha. Um
+comando não reconhecido mostra uma mensagem de erro sugerindo `help`.
+
+Para encerrar a demonstração, digite `panic` ou simplesmente feche a
+janela do QEMU. Ambos são um fim normal da execução, não um erro.
 
 ## Estrutura do projeto
 
 - `src/main.rs` — ponto de entrada do boot; limpa a tela, escreve a
-  mensagem de boas-vindas e registra o tratamento de panic.
+  mensagem de boas-vindas, inicializa interrupções e roda o laço ocioso que
+  alimenta o prompt de comandos com o teclado.
 - `src/vga_buffer.rs` — toda a lógica de escrita de texto no buffer de
-  vídeo VGA (`0xb8000`): cores, avanço de linha, rolagem.
+  vídeo VGA (`0xb8000`): cores, avanço de linha, rolagem, backspace e
+  cursor de hardware.
 - `src/panic.rs` — o que acontece quando o sistema encontra um erro
   irrecuperável (panic): mostra uma mensagem legível na tela em vez de
   travar ou reiniciar sem explicação.
+- `src/interrupts.rs` — a IDT, os handlers de breakpoint/double
+  fault/teclado (IRQ1) e a reprogramação do PIC 8259.
+- `src/keyboard.rs` — tradução de scancodes (Scan Code Set 1) para ASCII,
+  layout US QWERTY.
+- `src/shell.rs` — o buffer de linha e o prompt de comandos (`help`,
+  `clear`, `echo`, `sobre`, `panic`).
 - `x86_64-proto_os.json` — a especificação do target bare-metal customizado
   (sem sistema operacional por baixo).
 - `.cargo/config.toml` — configura o `cargo run` para usar o `bootimage`
@@ -127,28 +146,26 @@ da execução, não um erro.
 
 ## Escopo desta versão
 
-Este projeto é uma demonstração didática, não um kernel de verdade. Nesta
-versão: boot via BIOS (não UEFI), saída de texto em modo VGA com mensagem e
-cores fixas no código. Não há leitura de teclado, sistema de arquivos,
-rede, multitarefa ou suporte a hardware físico — apenas QEMU. Veja
-`.specify/memory/constitution.md` para os princípios completos do projeto.
+Este projeto é uma demonstração didática, não um kernel de verdade. Cobre:
+boot via BIOS (não UEFI); saída de texto em modo VGA com mensagem e cores
+fixas no código; e leitura de teclado via IRQ1 alimentando um prompt de
+comandos fechado (US QWERTY, somente ASCII). Não há sistema de arquivos,
+rede, multitarefa, histórico de comandos, outros layouts de teclado ou
+suporte a hardware físico — apenas QEMU. 
 
-## Próximos passos para um kernel de verdade
-
+Próximos passos para um kernel de verdade
 O que está aqui é o primeiro degrau, não o kernel. Para sair de "escreve texto na tela" e chegar em algo que mereça o nome de sistema operacional, faltam camadas inteiras, cada uma bem mais trabalhosa que esta demo. Em ordem aproximada de dificuldade:
 
-**Interrupções e teclado.** Configurar a IDT (Interrupt Descriptor Table), o PIC (ou APIC) e um handler para IRQ1, traduzindo scancodes em caracteres. É a extensão mais natural a partir daqui, já prevista mas fora do escopo desta versão.
+Interrupções e teclado. Configurar a IDT (Interrupt Descriptor Table), o PIC (ou APIC) e um handler para IRQ1, traduzindo scancodes em caracteres. É a extensão mais natural a partir daqui, já prevista mas fora do escopo desta versão.
 
-**Gerência de memória de verdade.** O `bootloader` já configura uma paginação mínima para o binário rodar, mas um kernel de verdade precisa de um alocador de frames físicos e um alocador de heap (`GlobalAlloc`) para poder usar `Vec`, `Box` e afins dentro do próprio kernel.
+Gerência de memória de verdade. O bootloader já configura uma paginação mínima para o binário rodar, mas um kernel de verdade precisa de um alocador de frames físicos e um alocador de heap (GlobalAlloc) para poder usar Vec, Box e afins dentro do próprio kernel.
 
-**Multitarefa.** Depois de ter heap, dá para pensar em um scheduler. A versão mais simples é cooperativa (cada tarefa cede o controle voluntariamente); a versão de verdade precisa de troca de contexto via interrupção de timer (PIT ou APIC timer) e um scheduler preemptivo.
+Multitarefa. Depois de ter heap, dá para pensar em um scheduler. A versão mais simples é cooperativa (cada tarefa cede o controle voluntariamente); a versão de verdade precisa de troca de contexto via interrupção de timer (PIT ou APIC timer) e um scheduler preemptivo.
 
-**Modo usuário (user space).** Hoje tudo roda em modo privilegiado (ring 0). Um kernel de verdade separa kernel de aplicação: ring 3, chamadas de sistema (syscalls) via interrupção de software ou `syscall`/`sysret`, e isolamento de memória entre processos via paginação.
+Modo usuário (user space). Hoje tudo roda em modo privilegiado (ring 0). Um kernel de verdade separa kernel de aplicação: ring 3, chamadas de sistema (syscalls) via interrupção de software ou syscall/sysret, e isolamento de memória entre processos via paginação.
 
-**Sistema de arquivos.** Começa com algo simples, como um driver de disco ATA/AHCI e um sistema de arquivos read-only tipo FAT ou até um formato próprio, antes de pensar em algo como ext.
+Sistema de arquivos. Começa com algo simples, como um driver de disco ATA/AHCI e um sistema de arquivos read-only tipo FAT ou até um formato próprio, antes de pensar em algo como ext.
 
-**Drivers.** Cada periférico a mais (disco, rede, som) é um driver novo, geralmente a parte mais entediante e mais cheia de detalhes de hardware de qualquer kernel.
+Drivers. Cada periférico a mais (disco, rede, som) é um driver novo, geralmente a parte mais entediante e mais cheia de detalhes de hardware de qualquer kernel.
 
-Cada um desses itens dá, sozinho, para um módulo de curso inteiro. Se a ideia é continuar essa jornada, a recomendação é tratar cada camada como um projeto separado, com sua própria constitution e spec no Speckit, em vez de tentar expandir esta demo de uma vez só.
-
-Eu vou começar a construir passo a passo, sempre que tiver um intervalo. Se quiser acompanhar, seja bem vindo ou bem vinda. 
+Cada um desses itens dá, sozinho, para um módulo de curso inteiro. Eu vou começar a construir passo a passo, sempre que tiver um intervalo. Se quiser acompanhar, seja bem vindo ou bem vinda.

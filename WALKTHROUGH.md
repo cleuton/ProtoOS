@@ -94,4 +94,67 @@ também se protege contra o caso raro de um panic acontecer *durante* o
 próprio tratamento de outro panic — nesse caso, ele nem tenta escrever de
 novo, só para a CPU, para nunca travar em um loop sem saída.
 
+## O caminho de uma tecla: do teclado até a tela
+
+A v1 só escrevia na tela. Esta versão responde à pergunta natural que vem
+depois: "e dá para digitar?". Para isso, o `proto-os` precisa reagir a um
+evento que pode acontecer a qualquer momento — uma tecla sendo pressionada
+— sem ficar perguntando "chegou alguma tecla? e agora? e agora?" o tempo
+todo (o que gastaria o processador à toa). A solução do hardware para isso
+se chama **interrupção**: o processador simplesmente para o que está
+fazendo, atende ao evento, e volta para onde estava. É um mecanismo
+completamente diferente de "escrever na tela" (que é só memória) — aqui
+existe um fluxo de controle real acontecendo fora da nossa função
+`kernel_main`.
+
+O caminho completo, de uma ponta a outra:
+
+1. **Você pressiona uma tecla.** O teclado (emulado pelo QEMU como um
+   teclado PS/2) envia um código para um pequeno chip da placa-mãe chamado
+   **controlador 8042**. Esse código não é a letra em si — é um número que
+   identifica *qual tecla física* mudou de estado, chamado **scancode**. O
+   8042 deixa esse scancode disponível para leitura em uma porta de
+   entrada/saída do processador, a porta `0x60`.
+2. **O 8042 avisa o PIC 8259** ("Programmable Interrupt Controller", o chip
+   que existe desde o PC original para gerenciar interrupções de hardware)
+   de que há um evento de teclado pendente. Esse aviso é a **IRQ1** — a
+   linha de interrupção número 1, reservada ao teclado desde os primeiros
+   PCs.
+3. **O PIC 8259 sinaliza o processador.** Antes disso poder funcionar sem
+   confusão, `src/interrupts.rs` reprogramou o PIC para que os números
+   (vetores) que ele usa para avisar o processador não colidam com os
+   números que o próprio processador já reserva para seus próprios erros
+   internos (como "instrução inválida" ou "divisão por zero") — e mascarou
+   todas as linhas de interrupção exceto a IRQ1, para que só o teclado
+   consiga interromper o processador nesta demonstração.
+4. **O processador consulta a IDT** ("Interrupt Descriptor Table"): uma
+   tabela, também montada em `src/interrupts.rs`, que diz "quando a
+   interrupção de número X acontecer, desvie a execução para esta função
+   específica". Para a IRQ1, essa função é o nosso próprio
+   `keyboard_interrupt_handler`, escrito em Rust.
+5. **O handler lê o scancode da porta `0x60` e devolve o controle
+   rapidinho.** De propósito, ele não faz mais nada além disso — nem
+   traduz o scancode, nem escreve na tela. Ele só guarda o scancode em uma
+   fila pequena e avisa o PIC "atendido" (sem esse aviso, chamado *EOI* —
+   *end of interrupt* —, o PIC nunca mais deixaria outra tecla interromper
+   o processador). Manter o handler curto evita um problema sutil: se ele
+   tentasse escrever na tela bem no meio de uma escrita que o resto do
+   programa já estivesse fazendo, os dois poderiam travar um esperando o
+   outro para sempre.
+6. **De volta ao fluxo principal**, o laço ocioso de `kernel_main` (em
+   `src/main.rs`) periodicamente esvazia essa fila e chama
+   `src/keyboard.rs` para **traduzir** cada scancode em um caractere ASCII,
+   de acordo com o layout de teclado US QWERTY (a mesma tecla física, em um
+   teclado ABNT2 brasileiro, produziria um símbolo diferente — por isso o
+   projeto documenta o layout no README em vez de tentar adivinhar).
+7. **O caractere traduzido chega a `src/shell.rs`**, que decide o que
+   fazer com ele: se for uma letra ou símbolo comum, guarda no buffer da
+   linha atual e ecoa na tela (reusando o mesmo `Writer` de `0xb8000` da
+   v1); se for Enter, interpreta a linha inteira como um comando; se for
+   Backspace, apaga o último caractere.
+
+Enquanto nenhuma tecla é pressionada, o processador não fica girando em um
+laço vazio consumindo energia à toa: a instrução `hlt` o coloca para
+"dormir" até a próxima interrupção — exatamente a mesma IRQ1 que acabamos
+de descrever é o que o acorda de novo.
 

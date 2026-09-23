@@ -1,7 +1,11 @@
 #![no_std]
 #![no_main]
+#![feature(abi_x86_interrupt)]
 
+mod interrupts;
+mod keyboard;
 mod panic;
+mod shell;
 mod vga_buffer;
 
 use bootloader::{entry_point, BootInfo};
@@ -15,14 +19,23 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
     println!("Este texto foi escrito direto no buffer de video VGA,");
     println!("por este mesmo binario Rust, sem nenhum SO por baixo.");
 
+    interrupts::init();
+    shell::print_prompt();
+
     loop {
-        // SAFETY: `hlt` apenas pausa a CPU até a próxima interrupção; não
-        // acessa memória nem modifica a pilha, então é seguro chamá-la em
-        // loop para manter o sistema "rodando" sem gastar CPU à toa depois
-        // que a mensagem de boas-vindas já foi escrita na tela.
-        unsafe {
-            core::arch::asm!("hlt", options(nomem, nostack));
-        }
+        x86_64::instructions::interrupts::without_interrupts(|| {
+            while let Some(scancode) = interrupts::next_scancode() {
+                if let Some(byte) = keyboard::translate(scancode) {
+                    shell::feed(byte);
+                }
+            }
+        });
+
+        // `enable_and_hlt` executa `sti; hlt` como uma única instrução
+        // atômica: habilita interrupções e pausa a CPU até a próxima, sem
+        // a janela de corrida em que uma tecla pressionada entre habilitar
+        // e pausar ficaria "perdida" até a tecla seguinte.
+        x86_64::instructions::interrupts::enable_and_hlt();
     }
 }
 

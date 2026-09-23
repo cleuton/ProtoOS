@@ -34,7 +34,11 @@ pub fn handle(info: &PanicInfo) -> ! {
 }
 
 /// Para a CPU em definitivo, sem gastar CPU à toa e sem reiniciar.
-fn halt_loop() -> ! {
+///
+/// Reaproveitada pelo handler de double fault (`interrupts.rs`): uma falha
+/// de CPU inesperada deve parar o sistema do mesmo jeito que um panic de
+/// software, em vez de virar um reinício silencioso em loop.
+pub(crate) fn halt_loop() -> ! {
     loop {
         // SAFETY: `hlt` apenas pausa a CPU até a próxima interrupção; não
         // acessa memória nem modifica a pilha, então é seguro executá-la

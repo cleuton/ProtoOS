@@ -4,6 +4,16 @@ use core::fmt;
 use lazy_static::lazy_static;
 use spin::Mutex;
 use volatile::Volatile;
+use x86_64::instructions::port::Port;
+
+/// Portas de índice/dado do controlador CRTC do VGA, usadas para mover o
+/// cursor de hardware do modo texto.
+const CRTC_INDEX_PORT: u16 = 0x3D4;
+const CRTC_DATA_PORT: u16 = 0x3D5;
+/// Índices dos registradores do CRTC que guardam a posição do cursor
+/// (16 bits, partido em byte alto e byte baixo).
+const CURSOR_LOCATION_HIGH: u8 = 0x0E;
+const CURSOR_LOCATION_LOW: u8 = 0x0F;
 
 /// As 16 cores fixas do hardware VGA em modo texto.
 #[allow(dead_code)]
@@ -83,6 +93,7 @@ impl Writer {
                 self.column_position += 1;
             }
         }
+        self.move_hardware_cursor();
     }
 
     fn write_string(&mut self, s: &str) {
@@ -128,6 +139,47 @@ impl Writer {
             self.clear_row(row);
         }
         self.column_position = 0;
+        self.move_hardware_cursor();
+    }
+
+    /// Remove o último caractere escrito, apagando-o da tela e voltando o
+    /// cursor lógico uma posição. Sem efeito quando a linha já está vazia
+    /// (não apaga o prompt).
+    fn backspace(&mut self) {
+        if self.column_position == 0 {
+            return;
+        }
+        self.column_position -= 1;
+
+        let row = BUFFER_HEIGHT - 1;
+        let col = self.column_position;
+        let blank = ScreenChar {
+            ascii_character: b' ',
+            color_code: self.color_code,
+        };
+        self.buffer.chars[row][col].write(blank);
+        self.move_hardware_cursor();
+    }
+
+    /// Move o cursor de hardware do modo texto VGA para acompanhar a
+    /// posição atual de escrita — sempre na última linha visível, já que
+    /// este `Writer` só escreve ali e rola a tela ao quebrar linha.
+    fn move_hardware_cursor(&self) {
+        let position = (BUFFER_HEIGHT - 1) * BUFFER_WIDTH + self.column_position;
+
+        let mut index_port: Port<u8> = Port::new(CRTC_INDEX_PORT);
+        let mut data_port: Port<u8> = Port::new(CRTC_DATA_PORT);
+
+        // SAFETY: 0x3D4/0x3D5 são as portas fixas de índice/dado do CRTC do
+        // VGA; os índices 0x0E/0x0F selecionam, respectivamente, o byte
+        // alto e o baixo do registrador de posição do cursor (um valor de
+        // 16 bits sem nenhum outro efeito colateral no hardware).
+        unsafe {
+            index_port.write(CURSOR_LOCATION_HIGH);
+            data_port.write(((position >> 8) & 0xff) as u8);
+            index_port.write(CURSOR_LOCATION_LOW);
+            data_port.write((position & 0xff) as u8);
+        }
     }
 }
 
@@ -178,4 +230,9 @@ pub fn _print(args: fmt::Arguments) {
 /// Limpa a tela do buffer VGA global (chamado uma vez, no boot).
 pub fn clear_screen() {
     WRITER.lock().clear_screen();
+}
+
+/// Apaga o último caractere escrito no `Writer` VGA global (Backspace).
+pub fn backspace() {
+    WRITER.lock().backspace();
 }
