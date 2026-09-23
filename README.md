@@ -1,5 +1,7 @@
 # proto-os
 
+![](imagem.jpg)
+
 Uma demonstração mínima de "programação sem sistema operacional" em Rust:
 um binário que dá boot direto via BIOS em uma máquina virtual QEMU, escreve
 texto na tela usando o buffer de vídeo VGA e lê o teclado via interrupção de
@@ -151,7 +153,7 @@ boot via BIOS (não UEFI); saída de texto em modo VGA com mensagem e cores
 fixas no código; e leitura de teclado via IRQ1 alimentando um prompt de
 comandos fechado (US QWERTY, somente ASCII). Não há sistema de arquivos,
 rede, multitarefa, histórico de comandos, outros layouts de teclado ou
-suporte a hardware físico — apenas QEMU. 
+suporte a hardware físico, mas apenas QEMU. 
 
 Próximos passos para um kernel de verdade
 O que está aqui é o primeiro degrau, não o kernel. Para sair de "escreve texto na tela" e chegar em algo que mereça o nome de sistema operacional, faltam camadas inteiras, cada uma bem mais trabalhosa que esta demo. Em ordem aproximada de dificuldade:
