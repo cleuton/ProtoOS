@@ -149,6 +149,4 @@ O que está aqui é o primeiro degrau, não o kernel. Para sair de "escreve text
 
 **Drivers.** Cada periférico a mais (disco, rede, som) é um driver novo, geralmente a parte mais entediante e mais cheia de detalhes de hardware de qualquer kernel.
 
-Cada um desses itens dá, sozinho, para um módulo de curso inteiro. Se a ideia é continuar essa jornada, a recomendação é tratar cada camada como um projeto separado, com sua própria constitution e spec no Speckit, em vez de tentar expandir esta demo de uma vez só.
-
-Eu vou começar a construir passo a passo, sempre que tiver um intervalo. Se quiser acompanhar, seja bem vindo ou bem vinda. 
+Cada um desses itens dá, sozinho, para um módulo de curso inteiro. Eu vou começar a construir passo a passo, sempre que tiver um intervalo. Se quiser acompanhar, seja bem vindo ou bem vinda. 
