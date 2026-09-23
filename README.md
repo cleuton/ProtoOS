@@ -156,8 +156,6 @@ suporte a hardware físico — apenas QEMU.
 Próximos passos para um kernel de verdade
 O que está aqui é o primeiro degrau, não o kernel. Para sair de "escreve texto na tela" e chegar em algo que mereça o nome de sistema operacional, faltam camadas inteiras, cada uma bem mais trabalhosa que esta demo. Em ordem aproximada de dificuldade:
 
-Interrupções e teclado. Configurar a IDT (Interrupt Descriptor Table), o PIC (ou APIC) e um handler para IRQ1, traduzindo scancodes em caracteres. É a extensão mais natural a partir daqui, já prevista mas fora do escopo desta versão.
-
 Gerência de memória de verdade. O bootloader já configura uma paginação mínima para o binário rodar, mas um kernel de verdade precisa de um alocador de frames físicos e um alocador de heap (GlobalAlloc) para poder usar Vec, Box e afins dentro do próprio kernel.
 
 Multitarefa. Depois de ter heap, dá para pensar em um scheduler. A versão mais simples é cooperativa (cada tarefa cede o controle voluntariamente); a versão de verdade precisa de troca de contexto via interrupção de timer (PIT ou APIC timer) e um scheduler preemptivo.
@@ -168,4 +166,4 @@ Sistema de arquivos. Começa com algo simples, como um driver de disco ATA/AHCI 
 
 Drivers. Cada periférico a mais (disco, rede, som) é um driver novo, geralmente a parte mais entediante e mais cheia de detalhes de hardware de qualquer kernel.
 
-Cada um desses itens dá, sozinho, para um módulo de curso inteiro. Eu vou começar a construir passo a passo, sempre que tiver um intervalo. Se quiser acompanhar, seja bem vindo ou bem vinda.
+Cada um desses itens dá, sozinho, para um módulo de curso inteiro. Eu vou começar a construir passo a passo, sempre que tiver um intervalo. Se quiser acompanhar, seja bem vindo ou bem vinda. 
