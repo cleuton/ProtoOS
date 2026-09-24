@@ -136,3 +136,54 @@ fn ascii_for_make_code(code: u8, shift: bool) -> Option<u8> {
     };
     Some(if shift { upper } else { lower })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Garante Shift solto no início de cada teste, independente da
+    /// ordem de execução — `SHIFT` é um estado global compartilhado por
+    /// toda a suíte.
+    fn reset_shift() {
+        translate(LEFT_SHIFT_BREAK);
+        translate(RIGHT_SHIFT_BREAK);
+    }
+
+    #[test_case]
+    fn traduz_letra_minuscula() {
+        reset_shift();
+        assert_eq!(translate(0x1E), Some(b'a'));
+    }
+
+    #[test_case]
+    fn traduz_letra_maiuscula_com_shift() {
+        reset_shift();
+        assert_eq!(translate(LEFT_SHIFT_MAKE), None);
+        assert_eq!(translate(0x1E), Some(b'A'));
+        reset_shift();
+    }
+
+    #[test_case]
+    fn traduz_digito_e_simbolo_com_shift() {
+        reset_shift();
+        assert_eq!(translate(0x02), Some(b'1'));
+        assert_eq!(translate(RIGHT_SHIFT_MAKE), None);
+        assert_eq!(translate(0x02), Some(b'!'));
+        reset_shift();
+    }
+
+    #[test_case]
+    fn ignora_break_code_de_tecla_comum() {
+        reset_shift();
+        // Break code de 'a' (0x1E | 0x80): qualquer break code exceto o
+        // de Shift é ignorado.
+        assert_eq!(translate(0x9E), None);
+    }
+
+    #[test_case]
+    fn ignora_scancode_nao_mapeado() {
+        reset_shift();
+        // 0x01 (Escape) não está na tabela de tradução.
+        assert_eq!(translate(0x01), None);
+    }
+}

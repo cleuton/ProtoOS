@@ -1,6 +1,7 @@
 //! Tratamento de panic: mostra uma mensagem legível na tela em vez de
 //! travar silenciosamente ou reiniciar sem aviso.
 
+use crate::serial_println;
 use crate::vga_buffer::WRITER;
 use core::fmt::Write;
 use core::panic::PanicInfo;
@@ -23,6 +24,8 @@ pub fn handle(info: &PanicInfo) -> ! {
         halt_loop();
     }
 
+    serial_println!("[PANIC] {}", info);
+
     let mut writer = WRITER.lock();
     // `write_str`/`write!` sobre `Writer` nunca falham (ver vga_buffer.rs),
     // então ignorar o `Result` aqui não esconde nenhum erro real possível.
@@ -35,10 +38,14 @@ pub fn handle(info: &PanicInfo) -> ! {
 
 /// Para a CPU em definitivo, sem gastar CPU à toa e sem reiniciar.
 ///
-/// Reaproveitada pelo handler de double fault (`interrupts.rs`): uma falha
-/// de CPU inesperada deve parar o sistema do mesmo jeito que um panic de
-/// software, em vez de virar um reinício silencioso em loop.
-pub(crate) fn halt_loop() -> ! {
+/// Reaproveitada pelo handler de double fault (`interrupts.rs`) e pelos
+/// pontos de entrada de teste em `lib.rs`/`main.rs`/`tests/*.rs`: uma
+/// falha de CPU inesperada deve parar o sistema do mesmo jeito que um
+/// panic de software, em vez de virar um reinício silencioso em loop.
+/// Pública (não `pub(crate)`) porque, depois da reorganização em
+/// biblioteca + binário, `main.rs` é um crate externo à biblioteca
+/// `proto_os` e precisa poder chamá-la.
+pub fn halt_loop() -> ! {
     loop {
         // SAFETY: `hlt` apenas pausa a CPU até a próxima interrupção; não
         // acessa memória nem modifica a pilha, então é seguro executá-la

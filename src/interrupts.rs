@@ -7,7 +7,7 @@ use x86_64::instructions::port::Port;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 use crate::panic::halt_loop;
-use crate::println;
+use crate::{println, serial_println};
 
 /// Offset de vetor do PIC mestre: logo após as 32 exceções reservadas da
 /// CPU (vetores 0–31), para que nenhuma IRQ de hardware colida com elas.
@@ -50,6 +50,7 @@ lazy_static! {
 /// demonstrando que uma exceção de CPU pode ser tratada sem interromper a
 /// execução do sistema.
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
+    serial_println!("[EXCEPTION] breakpoint (int3)");
     println!("[EXCEPTION] breakpoint (int3)\n{:#?}", stack_frame);
 }
 
@@ -63,6 +64,7 @@ extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     _error_code: u64,
 ) -> ! {
+    serial_println!("[DOUBLE FAULT] proto-os parou");
     println!("[DOUBLE FAULT] proto-os parou\n{:#?}", stack_frame);
     halt_loop();
 }
@@ -160,5 +162,17 @@ pub fn init() {
     unsafe {
         PICS.lock().initialize();
         PICS.lock().write_masks(MASTER_PIC_MASK, SLAVE_PIC_MASK);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test_case]
+    fn breakpoint_e_tratado_sem_interromper_a_execucao() {
+        // `proto_os::init()` (chamado antes da suíte) já carregou a IDT.
+        // Se o handler de breakpoint não retornasse normalmente, esta
+        // instrução nunca seria alcançada e o teste travaria até o
+        // tempo máximo de execução esgotar.
+        x86_64::instructions::interrupts::int3();
     }
 }

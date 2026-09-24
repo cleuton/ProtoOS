@@ -158,3 +158,207 @@ laço vazio consumindo energia à toa: a instrução `hlt` o coloca para
 "dormir" até a próxima interrupção — exatamente a mesma IRQ1 que acabamos
 de descrever é o que o acorda de novo.
 
+## A porta serial: um segundo canal de texto, só para o host
+
+Até aqui, a única forma de "ver" o que o `proto-os` está fazendo era olhar
+a tela do QEMU. Isso funciona bem para uma demonstração ao vivo, mas tem
+um problema para quem está depurando um erro: a tela do QEMU não tem
+histórico rolável de verdade fora do que já está nela, não dá para
+copiar texto dela facilmente, e ela também é a tela que a "plateia" vê —
+não queremos poluí-la com mensagens técnicas de diagnóstico.
+
+A solução é um segundo canal de comunicação, completamente separado da
+tela: a **porta serial**. Antes de existir rede, todo PC já tinha uma
+porta serial (também chamada de "porta COM") — um conector físico que
+manda e recebe um byte de cada vez, um cabo simples que ligava dois
+computadores (ou um computador e uma impressora) diretamente. O QEMU
+emula essa porta e a conecta, do outro lado, ao terminal onde você digitou
+`cargo run` ou `cargo test` — é por isso que `Cargo.toml` já tinha, desde
+antes deste marco, a configuração `-serial stdio` para o QEMU.
+
+Assim como a tela em modo texto (explicada lá em cima) é só um endereço de
+memória especial, a porta serial é controlada através de **portas de
+entrada e saída** (*I/O ports*): endereços especiais do processador,
+diferentes dos endereços de memória comum, acessados com instruções
+específicas (`in`/`out` em assembly; em Rust, o tipo `Port` da crate
+`x86_64` esconde esse detalhe). O chip que implementa a porta serial se
+chama **UART 16550**, e ele está sempre no mesmo endereço de I/O em um PC:
+`0x3F8`. `src/serial.rs` usa a crate `uart_16550` para conversar com esse
+chip: construir um `SerialPort` apontando para `0x3F8`, chamar `.init()`
+uma vez, logo no início do boot, antes de qualquer outra mensagem de
+diagnóstico, e, a partir daí, escrever texto nele é tão parecido com
+`println!` quanto possível — por isso as macros se chamam
+`serial_print!`/`serial_println!`.
+
+Tem um detalhe importante escondido aí: e se o handler de uma interrupção
+(por exemplo, o de breakpoint) precisar escrever na serial *exatamente*
+no meio de uma escrita que o fluxo principal do kernel já estava fazendo?
+Sem cuidado, os dois ficariam brigando pelo mesmo recurso e travariam um
+esperando o outro para sempre (um *deadlock*). A solução, em
+`src/serial.rs`, é desabilitar as interrupções durante toda escrita na
+serial: se o fluxo principal está no meio de uma escrita, ele
+literalmente não pode ser interrompido até terminar, então o handler
+nunca chega a competir pelo mesmo recurso enquanto ele está ocupado.
+
+## Um executor de testes sem biblioteca padrão
+
+O mecanismo normal de testes do Rust (o que roda quando você digita
+`cargo test` em um projeto comum) depende da biblioteca padrão do Rust
+(`std`) — que não existe aqui: o `proto-os` é `#![no_std]` desde o Marco
+0, porque não há sistema operacional embaixo para fornecer arquivos,
+threads, alocação de memória, etc. Ainda assim, o compilador nightly do
+Rust tem um mecanismo pensado exatamente para este caso, chamado
+`custom_test_frameworks`: em vez de usar o executor padrão, o projeto
+registra a própria função que deve rodar quando alguém marca um item com
+o atributo `#[test_case]`.
+
+O nosso executor (`test_runner`, em `src/lib.rs`) é propositalmente
+simples: recebe uma lista de tudo que foi marcado com `#[test_case]`,
+imprime na serial quantos itens há (`Running <N> tests`), roda cada um na
+ordem, e imprime `[ok]` depois de cada um que retornar sem dar erro. Não
+há alocação de memória em nenhum ponto disso: a lista de testes é uma
+fatia (`&[...]`) montada pelo próprio compilador, de tamanho fixo,
+conhecida em tempo de compilação.
+
+Todo o kernel é compilado *duas vezes*: uma vez normal (o binário que
+`cargo run` usa) e uma vez em "modo de teste" (o que `cargo test` usa,
+ativado pela flag `#[cfg(test)]` espalhada pelo código). Como testes de
+integração em `tests/` são arquivos separados que dependem do kernel como
+uma biblioteca, o projeto precisou ganhar um `src/lib.rs` novo (além do
+`src/main.rs` já existente): a biblioteca contém todos os módulos do
+kernel e pode ser reaproveitada tanto pelo binário de produção quanto por
+cada teste de integração, cada um dando boot no kernel do zero, no seu
+próprio processo QEMU independente.
+
+## Do kernel ao código de saída: como o resultado chega ao host
+
+Rodar os testes dentro do QEMU resolve metade do problema: e como o
+`cargo test`, que está rodando no seu computador de verdade (o "host"),
+sabe se os testes *dentro* da máquina virtual passaram ou falharam? O
+QEMU não lê a mente do kernel — precisa de um sinal explícito.
+
+A resposta é um dispositivo de hardware virtual que o próprio QEMU
+oferece para esse propósito, chamado `isa-debug-exit`: um endereço de I/O
+(`0xf4`, neste projeto) que, quando o kernel escreve um valor nele, faz o
+processo do QEMU **encerrar imediatamente**, usando esse valor para
+compor o código de saída do próprio processo QEMU. A fórmula exata é
+`(valor << 1) | 1` — então escrever `0x10` faz o QEMU sair com código
+`33`, e escrever `0x11` faz o QEMU sair com código `35`. Esses dois
+valores (`Success`/`Failed`) foram escolhidos só por serem os mesmos
+usados na literatura de referência sobre construir um kernel em Rust — o
+importante é que eles não colidem com os códigos de saída que o próprio
+QEMU já usa para seus próprios erros internos.
+
+Só que `35` (ou `33`) não são exatamente `0`/`1` — não seria natural para
+quem roda `cargo test` esperar decorar esses números. É aí que entra o
+`bootimage`, a ferramenta que já empacotava o kernel numa imagem de disco
+desde o Marco 0: o `Cargo.toml` deste projeto diz a ela, em
+`test-success-exit-code = 33`, "quando o processo do QEMU sair com o
+código 33, isso significa sucesso — traduza para o código de saída `0` do
+próprio `cargo test`". Qualquer outro código de saída do QEMU (incluindo
+`35`, ou o código usado quando o `bootimage` precisa matar o QEMU por
+demorar demais) permanece diferente de zero. É por isso que, depois de
+`cargo test`, `echo $?` já é suficiente para saber se tudo passou, sem
+precisar ler nenhuma linha de texto.
+
+## O papel do tempo máximo e o que acontece com um panic durante um teste
+
+E se um teste nunca terminar — por exemplo, um `loop {}` por engano? Sem
+alguma proteção, `cargo test` ficaria esperando para sempre. Por isso
+`Cargo.toml` também define `test-timeout = 60`: se um binário de teste
+não sinalizar sucesso ou falha dentro desse tempo, o `bootimage` mata o
+processo do QEMU sozinho e reporta falha ao `cargo test` — sessenta
+segundos é bem mais do que a suíte inteira normalmente leva, mas ainda
+assim curto o suficiente para não deixar quem está rodando os testes
+esperando por muito tempo.
+
+E um `panic!` no meio de um teste? Como o alvo deste projeto usa
+`panic-strategy = "abort"` (definido no target customizado
+`x86_64-proto_os.json`), não existe a possibilidade de "capturar" um
+panic e continuar executando o resto do programa normalmente, como
+aconteceria num programa Rust comum rodando sobre um sistema operacional.
+Um panic aqui **encerra o processo inteiro** — então, em modo de teste, o
+`#[panic_handler]` (uma versão diferente da usada em `cargo run`, ver
+`src/lib.rs`) trata qualquer panic como uma falha: escreve `[failed]`
+mais a localização e a mensagem do panic na serial, e sinaliza
+`QemuExitCode::Failed` ao host. Como o panic interrompe tudo, nenhum
+teste depois dele, no mesmo binário, chega a rodar — exatamente o
+comportamento esperado quando algo dá muito errado no meio da suíte.
+
+Essa mesma limitação é o motivo de existir um teste bem diferente dos
+outros: `tests/should_panic.rs`. Ele existe para provar que, quando o
+kernel *deveria* entrar em panic numa certa situação, ele realmente
+entra. Só que, se um panic normal sempre significa "falha", como testar
+que um panic *aconteceu como esperado*? A resposta é que esse arquivo não
+usa o executor de testes comum: ele é o seu próprio programa completo,
+com seu próprio `#[panic_handler]`, que trata o panic como **sucesso**
+(porque era exatamente o que se esperava que acontecesse) — e, se a
+função sob teste terminar sem dar panic, é isso que vira uma falha.
+
+## Como escrever um teste novo
+
+Um teste de unidade — que mora dentro do próprio módulo que está sendo
+testado, como os que já existem em `src/vga_buffer.rs`,
+`src/keyboard.rs`, `src/shell.rs`, `src/interrupts.rs` e `src/serial.rs`
+— é só uma função sem parâmetros, marcada com `#[test_case]`, dentro de
+um bloco `#[cfg(test)] mod tests { ... }` no final do arquivo:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test_case]
+    fn minha_verificacao() {
+        assert_eq!(2 + 2, 4);
+    }
+}
+```
+
+O teste passa se a função terminar normalmente, e falha se qualquer
+`assert!`/`assert_eq!` (ou qualquer outro panic) disparar dentro dela.
+Um único cuidado: nunca escreva, dentro de um teste comum desses, uma
+chamada que você sabe que vai entrar em panic de propósito (como o
+comando `panic` do prompt) — isso derrubaria o binário inteiro em vez de
+passar, exatamente pelo motivo explicado na seção anterior. Para esse
+caso específico, o teste precisa ser um arquivo próprio em `tests/`,
+seguindo o modelo de `tests/should_panic.rs`.
+
+Um teste de integração novo é um arquivo novo dentro de `tests/`, com sua
+própria cópia mínima do cabeçalho que aparece em
+`tests/boot_integration.rs`:
+
+```rust
+#![no_std]
+#![no_main]
+#![feature(custom_test_frameworks)]
+#![test_runner(proto_os::test_runner)]
+#![reexport_test_harness_main = "test_main"]
+
+use bootloader::{entry_point, BootInfo};
+use core::panic::PanicInfo;
+
+entry_point!(main);
+
+fn main(_boot_info: &'static BootInfo) -> ! {
+    test_main();
+    proto_os::panic::halt_loop();
+}
+
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    proto_os::test_panic_handler(info)
+}
+
+#[test_case]
+fn meu_teste_de_integracao() {
+    proto_os::init();
+    // ... o resto do cenário sob teste
+}
+```
+
+Cada arquivo em `tests/` dá boot no kernel do zero, no seu próprio
+processo QEMU — por isso `proto_os::init()` precisa ser chamado de novo
+em cada um, mesmo que o teste anterior já o tenha chamado no seu próprio
+binário.
+

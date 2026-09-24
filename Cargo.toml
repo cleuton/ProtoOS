@@ -1,6 +1,6 @@
 [package]
 name = "proto_os"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
@@ -9,10 +9,18 @@ volatile = "0.2.6"
 spin = "0.5.2"
 x86_64 = "0.15.2"
 pic8259 = "0.11.0"
+uart_16550 = "0.3.2"
 
 [dependencies.lazy_static]
 version = "1.4.0"
 features = ["spin_no_std"]
 
+[[test]]
+name = "should_panic"
+harness = false
+
 [package.metadata.bootimage]
 run-args = ["-serial", "stdio"]
+test-args = ["-serial", "stdio", "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04", "-display", "none"]
+test-success-exit-code = 33
+test-timeout = 60

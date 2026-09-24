@@ -236,3 +236,111 @@ pub fn clear_screen() {
 pub fn backspace() {
     WRITER.lock().backspace();
 }
+
+/// Verdadeiro se `needle` aparece em alguma linha da tela, em sequência
+/// (sem quebra de linha no meio). Usada só por testes de outros módulos
+/// (ex.: `shell.rs`) para verificar o efeito observável de um comando
+/// sem precisar prever a linha exata onde o texto termina depois da
+/// rolagem.
+#[cfg(test)]
+pub(crate) fn screen_contains(needle: &str) -> bool {
+    let needle = needle.as_bytes();
+    if needle.is_empty() || needle.len() > BUFFER_WIDTH {
+        return false;
+    }
+    let writer = WRITER.lock();
+    for row in 0..BUFFER_HEIGHT {
+        'window: for start in 0..=(BUFFER_WIDTH - needle.len()) {
+            for (i, &b) in needle.iter().enumerate() {
+                if writer.buffer.chars[row][start + i].read().ascii_character != b {
+                    continue 'window;
+                }
+            }
+            return true;
+        }
+    }
+    false
+}
+
+/// Verdadeiro se a tela inteira está em branco (todas as posições com
+/// espaço). Usada só por testes de outros módulos para confirmar o
+/// efeito do comando `clear`.
+#[cfg(test)]
+pub(crate) fn screen_is_blank() -> bool {
+    let writer = WRITER.lock();
+    for row in 0..BUFFER_HEIGHT {
+        for col in 0..BUFFER_WIDTH {
+            if writer.buffer.chars[row][col].read().ascii_character != b' ' {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test_case]
+    fn escreve_caractere_simples() {
+        clear_screen();
+        crate::print!("A");
+        let ch = WRITER.lock().buffer.chars[BUFFER_HEIGHT - 1][0].read();
+        assert_eq!(ch.ascii_character, b'A');
+    }
+
+    #[test_case]
+    fn quebra_de_linha() {
+        clear_screen();
+        // O primeiro "\n" garante uma linha 24 limpa antes de "cd", já
+        // que `write_byte` sempre escreve na última linha visível: a
+        // quebra de linha rola o conteúdo anterior ("ab") para a linha
+        // 23 e reseta a coluna, então "cd" começa do zero na linha 24.
+        crate::print!("ab\ncd");
+        let writer = WRITER.lock();
+        assert_eq!(
+            writer.buffer.chars[BUFFER_HEIGHT - 1][0].read().ascii_character,
+            b'c'
+        );
+        assert_eq!(
+            writer.buffer.chars[BUFFER_HEIGHT - 1][1].read().ascii_character,
+            b'd'
+        );
+    }
+
+    #[test_case]
+    fn rolagem_ao_ultrapassar_a_altura_da_tela() {
+        clear_screen();
+        crate::print!("\nPRIMEIRA\nSEGUNDA");
+        let writer = WRITER.lock();
+        for (i, c) in "PRIMEIRA".bytes().enumerate() {
+            assert_eq!(
+                writer.buffer.chars[BUFFER_HEIGHT - 2][i].read().ascii_character,
+                c
+            );
+        }
+        for (i, c) in "SEGUNDA".bytes().enumerate() {
+            assert_eq!(
+                writer.buffer.chars[BUFFER_HEIGHT - 1][i].read().ascii_character,
+                c
+            );
+        }
+    }
+
+    #[test_case]
+    fn apaga_ultimo_caractere_com_backspace() {
+        clear_screen();
+        crate::print!("AB");
+        backspace();
+        let writer = WRITER.lock();
+        assert_eq!(
+            writer.buffer.chars[BUFFER_HEIGHT - 1][0].read().ascii_character,
+            b'A'
+        );
+        assert_eq!(
+            writer.buffer.chars[BUFFER_HEIGHT - 1][1].read().ascii_character,
+            b' '
+        );
+    }
+}
