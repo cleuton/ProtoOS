@@ -238,12 +238,14 @@ pub fn backspace() {
 }
 
 /// Verdadeiro se `needle` aparece em alguma linha da tela, em sequência
-/// (sem quebra de linha no meio). Usada só por testes de outros módulos
-/// (ex.: `shell.rs`) para verificar o efeito observável de um comando
-/// sem precisar prever a linha exata onde o texto termina depois da
-/// rolagem.
-#[cfg(test)]
-pub(crate) fn screen_contains(needle: &str) -> bool {
+/// (sem quebra de linha no meio). Usada por testes de outros módulos
+/// (ex.: `shell.rs`) e por testes de integração em `tests/` (por isso é
+/// `pub`, não só `#[cfg(test)]`: um binário de teste de integração
+/// depende de `proto_os` como uma crate externa comum, compilada sem
+/// `--cfg test`, então não enxergaria um item `pub(crate)`/`cfg(test)`)
+/// para verificar o efeito observável de um comando sem precisar prever
+/// a linha exata onde o texto termina depois da rolagem.
+pub fn screen_contains(needle: &str) -> bool {
     let needle = needle.as_bytes();
     if needle.is_empty() || needle.len() > BUFFER_WIDTH {
         return false;

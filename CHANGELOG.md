@@ -5,6 +5,62 @@ uma versão por vez. O formato segue, livremente,
 [Keep a Changelog](https://keepachangelog.com/), e as versões seguem
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.4.0] - 2026-09-25
+
+Marco 4: proteção — GDT e TSS próprias, handlers para as exceções
+principais, comando `falha <tipo>` e identificação de versão única.
+
+### Adicionado
+
+- GDT própria do kernel (`src/gdt.rs`): segmento de código do kernel e
+  descritor da TSS, carregada durante o boot antes da IDT.
+- TSS com uma pilha dedicada de 20 KiB na Interrupt Stack Table
+  (`DOUBLE_FAULT_IST_INDEX`), usada pelo handler de double fault — um
+  estouro de pilha do kernel não causa mais triple fault e reinício
+  silencioso do QEMU.
+- Handlers para as cinco exceções principais: breakpoint (`#BP`, já
+  existente, agora com tela reduzida a uma linha), instrução inválida
+  (`#UD`), proteção geral (`#GP`), page fault (`#PF`) e double fault
+  (`#DF`, agora na pilha dedicada). As quatro fatais mostram uma tela
+  legível (tela + serial), no estilo da tela de panic, com nome, sigla,
+  endereço da instrução, código de erro (quando há um) e a versão do
+  proto-os; a tela de page fault também mostra o endereço de falha e a
+  interpretação do código de erro em palavras (leitura/escrita,
+  página ausente/violação de proteção).
+- Comando `falha <tipo>` no prompt: `pagina`, `pilha`, `opcode`,
+  `protecao` e `breakpoint`, cada um provocando de propósito a exceção
+  correspondente; sem argumento ou com um tipo desconhecido, lista os
+  tipos disponíveis.
+- Identificação de versão única (`proto_os::VERSION`, derivada de
+  `Cargo.toml` em tempo de compilação), exibida na mensagem de
+  boas-vindas, na primeira linha de diagnóstico da serial, no comando
+  `sobre`, e em toda tela de panic ou de exceção fatal.
+- Nova linha de diagnóstico na serial ("gdt/tss ativos") logo após a
+  inicialização da GDT/TSS.
+- 7 testes novos: 2 testes de integração dedicados (`tests/double_fault.rs`,
+  provando que o handler roda na pilha dedicada da IST; `tests/page_fault.rs`,
+  provando o endereço de falha esperado), e 5 testes de unidade/integração
+  de versão e do comando `falha` (`src/shell.rs`, `tests/boot_integration.rs`).
+- Capítulo novo no `WALKTHROUGH.md` sobre exceções de CPU, GDT, TSS e
+  Interrupt Stack Table, o double fault com pilha dedicada, como ler o
+  código de erro e o endereço de um page fault, e como a versão chega do
+  `Cargo.toml` até a tela.
+
+### Alterado
+
+- Versão do projeto: `0.3.0` → `0.4.0`.
+- `proto_os::init` passa a chamar `gdt::init()` entre `serial::init()` e
+  `interrupts::init()`.
+- A guarda de reentrância do tratamento de panic (`panic.rs`) passa a
+  ser compartilhada com a tela de exceção fatal, através de
+  `panic::enter_fatal_handler()`.
+- `vga_buffer::screen_contains` deixa de ser exclusiva de testes internos
+  (`#[cfg(test)] pub(crate)`) e passa a `pub`, para ser reaproveitada por
+  testes de integração em `tests/`.
+- `README.md`: Marco 4 marcado como concluído na tabela de marcos, nos
+  detalhes de cada marco e na seção Status; comando `falha <tipo>` na
+  tabela de comandos; estrutura do projeto atualizada.
+
 ## [0.3.0] - 2026-09-25
 
 Marco 3: memória — alocador de frames físicos, paginação e heap do kernel.

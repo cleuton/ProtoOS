@@ -1,13 +1,16 @@
 //! IDT, exceções de CPU, PIC 8259 e o handler de teclado (IRQ1).
 
+use core::fmt::Write as _;
 use lazy_static::lazy_static;
 use pic8259::ChainedPics;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
+use x86_64::registers::control::Cr2;
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode};
 
 use crate::panic::halt_loop;
-use crate::{println, serial_println};
+use crate::vga_buffer::WRITER;
+use crate::{gdt, println, serial_println, VERSION};
 
 /// Offset de vetor do PIC mestre: logo após as 32 exceções reservadas da
 /// CPU (vetores 0–31), para que nenhuma IRQ de hardware colida com elas.
@@ -36,20 +39,36 @@ static PICS: Mutex<ChainedPics> = Mutex::new(unsafe {
     ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET)
 });
 
-// Invariante do projeto, desde o Marco 3 (`research.md`, seção 9):
-// nenhum handler registrado nesta IDT aloca ou libera memória do heap
-// (`breakpoint_handler`/`double_fault_handler` só usam
-// `println!`/`serial_println!`; `keyboard_interrupt_handler` só empilha
-// um byte numa fila de tamanho fixo). É isso que garante que o
-// `spin::Mutex` interno do alocador global (`src/allocator.rs`) nunca
-// pode ser disputado entre o fluxo principal e uma interrupção — um
-// handler novo que precise alocar violaria este invariante e exige
-// revisão explícita antes de ser aceito.
+// Invariante do projeto, desde o Marco 3 (`research.md` do Marco 3,
+// seção 9; ampliado no Marco 4, `research.md` seção 5): nenhum handler
+// registrado nesta IDT aloca ou libera memória do heap.
+// `breakpoint_handler`, `invalid_opcode_handler`,
+// `general_protection_fault_handler`, `page_fault_handler` e
+// `double_fault_handler` só usam `println!`/`serial_println!` (os
+// quatro últimos, através de `fatal_exception`, que só formata em
+// variáveis de pilha); `keyboard_interrupt_handler` só empilha um byte
+// numa fila de tamanho fixo (`ScancodeQueue`, array `[u8; 16]`). É isso
+// que garante que o `spin::Mutex` interno do alocador global
+// (`src/allocator.rs`) nunca pode ser disputado entre o fluxo principal
+// e uma interrupção — um handler novo que precise alocar violaria este
+// invariante e exige revisão explícita antes de ser aceito.
 lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
         idt.breakpoint.set_handler_fn(breakpoint_handler);
-        idt.double_fault.set_handler_fn(double_fault_handler);
+        idt.invalid_opcode.set_handler_fn(invalid_opcode_handler);
+        idt.general_protection_fault
+            .set_handler_fn(general_protection_fault_handler);
+        idt.page_fault.set_handler_fn(page_fault_handler);
+        // SAFETY: o índice aponta para a única pilha que `gdt::init()`
+        // (já chamado antes de `interrupts::init()`, ver `lib.rs`)
+        // reserva na Interrupt Stack Table da TSS para este propósito —
+        // nenhum outro handler ou código do kernel usa essa mesma pilha.
+        unsafe {
+            idt.double_fault
+                .set_handler_fn(double_fault_handler)
+                .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
+        }
         idt[KEYBOARD_INTERRUPT_VECTOR].set_handler_fn(keyboard_interrupt_handler);
         idt
     };
@@ -57,24 +76,147 @@ lazy_static! {
 
 /// Handler de breakpoint (`int3`): relata a exceção e retorna normalmente,
 /// demonstrando que uma exceção de CPU pode ser tratada sem interromper a
-/// execução do sistema.
+/// execução do sistema. Não é fatal: a tela ganha só uma linha curta (a
+/// serial continua com a mesma linha de sempre, desde o Marco 1).
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     serial_println!("[EXCEPTION] breakpoint (int3)");
-    println!("[EXCEPTION] breakpoint (int3)\n{:#?}", stack_frame);
+    println!(
+        "[EXCEPTION] breakpoint (#BP) em {:#x}",
+        stack_frame.instruction_pointer.as_u64()
+    );
 }
 
-/// Handler de double fault: mostra uma mensagem legível e para a CPU, para
-/// que uma falha inesperada nunca vire um reinício silencioso em loop —
-/// mesmo espírito do tratamento de panic da v1. Sem pilha dedicada (IST):
-/// um double fault causado por estouro da própria pilha do kernel fica
-/// fora do que este handler consegue tratar de forma confiável (fora de
-/// escopo, conforme a constitution).
+/// Handler de instrução inválida (`#UD`): fatal, mostra a tela de
+/// exceção e para o kernel.
+extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
+    fatal_exception("Invalid Opcode", "#UD", &stack_frame, None, None);
+}
+
+/// Handler de proteção geral (`#GP`): fatal, mostra a tela de exceção
+/// (com o código de erro) e para o kernel.
+extern "x86-interrupt" fn general_protection_fault_handler(
+    stack_frame: InterruptStackFrame,
+    error_code: u64,
+) {
+    fatal_exception(
+        "General Protection Fault",
+        "#GP",
+        &stack_frame,
+        Some(error_code),
+        None,
+    );
+}
+
+/// Handler de page fault (`#PF`): fatal, mostra a tela de exceção com o
+/// endereço de falha (lido de CR2) e a interpretação do código de erro
+/// em palavras, e para o kernel.
+extern "x86-interrupt" fn page_fault_handler(
+    stack_frame: InterruptStackFrame,
+    error_code: PageFaultErrorCode,
+) {
+    let fault_address = Cr2::read_raw();
+    fatal_exception(
+        "Page Fault",
+        "#PF",
+        &stack_frame,
+        Some(error_code.bits()),
+        Some((fault_address, error_code)),
+    );
+}
+
+/// Handler de double fault: fatal, roda na pilha dedicada da IST
+/// (registrada em `IDT`, acima), mostra a tela de exceção e para o
+/// kernel — nunca mais um reinício silencioso do QEMU por estouro de
+/// pilha, independentemente do estado da pilha que estava em uso.
 extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     _error_code: u64,
 ) -> ! {
-    serial_println!("[DOUBLE FAULT] proto-os parou");
-    println!("[DOUBLE FAULT] proto-os parou\n{:#?}", stack_frame);
+    fatal_exception("Double Fault", "#DF", &stack_frame, None, None);
+}
+
+/// Mostra a tela de exceção fatal (tela + serial, FR-009) compartilhada
+/// pelas quatro exceções fatais (`#UD`, `#GP`, `#PF`, `#DF`), no mesmo
+/// estilo visual da tela de panic, com o cabeçalho `[EXCEPTION]` para
+/// distinguir as duas (Assumptions da spec). Contém sempre nome/sigla,
+/// endereço da instrução e a versão do proto-os (FR-007); `error_code`
+/// aparece quando a exceção tem um (`#GP`, `#PF`); `page_fault_info`
+/// aparece só para `#PF`, com o endereço de falha e a interpretação em
+/// palavras do código de erro (FR-008). Nunca aloca memória do heap
+/// (FR-011) — só formata em variáveis de pilha. Nunca retorna: termina
+/// sempre parando a CPU de forma controlada (FR-007).
+fn fatal_exception(
+    name: &str,
+    mnemonic: &str,
+    stack_frame: &InterruptStackFrame,
+    error_code: Option<u64>,
+    page_fault_info: Option<(u64, PageFaultErrorCode)>,
+) -> ! {
+    if crate::panic::enter_fatal_handler() {
+        // Um panic ou outra exceção fatal já estava em andamento (por
+        // exemplo, um bug nesta própria função provocando uma nova
+        // falha) — o Mutex do WRITER pode já estar travado pelo evento
+        // anterior, então não tentamos travá-lo de novo; só a serial
+        // (Edge Case "exceção com locks ocupados").
+        serial_println!(
+            "[EXCEPTION] {} ({}) reentrante — {} parou",
+            name,
+            mnemonic,
+            VERSION
+        );
+        halt_loop();
+    }
+
+    let address = stack_frame.instruction_pointer.as_u64();
+
+    // Interpretação em palavras do código de erro de page fault (FR-008),
+    // calculada uma única vez e reaproveitada na tela e na serial.
+    let page_fault_words = page_fault_info.map(|(fault_address, code)| {
+        let acesso = if code.contains(PageFaultErrorCode::CAUSED_BY_WRITE) {
+            "escrita"
+        } else {
+            "leitura"
+        };
+        let causa = if code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
+            "violacao de protecao"
+        } else {
+            "pagina ausente"
+        };
+        (fault_address, acesso, causa)
+    });
+
+    serial_println!("[EXCEPTION] {} ({})", name, mnemonic);
+    serial_println!("endereco da instrucao: {:#x}", address);
+    if let Some(code) = error_code {
+        serial_println!("codigo de erro: {:#x}", code);
+    }
+    if let Some((fault_address, acesso, causa)) = page_fault_words {
+        serial_println!("endereco de falha: {:#x}", fault_address);
+        serial_println!("acesso: {}", acesso);
+        serial_println!("causa: {}", causa);
+    }
+    serial_println!("{}", VERSION);
+
+    let mut writer = WRITER.lock();
+    // `write!` sobre `Writer` nunca falha de verdade (ver
+    // `vga_buffer.rs`), então ignorar o `Result` aqui não esconde nenhum
+    // erro real possível.
+    let _ = write!(
+        writer,
+        "\n[EXCEPTION] {} ({}) - {} parou\n",
+        name, mnemonic, VERSION
+    );
+    let _ = write!(writer, "endereco da instrucao: {:#x}\n", address);
+    if let Some(code) = error_code {
+        let _ = write!(writer, "codigo de erro: {:#x}\n", code);
+    }
+    if let Some((fault_address, acesso, causa)) = page_fault_words {
+        let _ = write!(writer, "endereco de falha: {:#x}\n", fault_address);
+        let _ = write!(writer, "acesso: {}\n", acesso);
+        let _ = write!(writer, "causa: {}\n", causa);
+    }
+    drop(writer);
+
     halt_loop();
 }
 

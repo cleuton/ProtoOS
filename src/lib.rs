@@ -11,21 +11,44 @@ extern crate alloc;
 pub mod allocator;
 pub mod vga_buffer;
 pub mod serial;
+pub mod gdt;
 pub mod interrupts;
 pub mod keyboard;
 pub mod memory;
 pub mod shell;
 pub mod panic;
 
+/// Identificação do sistema no formato `proto-os vX.Y.Z`, derivada do
+/// campo `version` de `Cargo.toml` em tempo de compilação (FR-015) — a
+/// única fonte da versão em todo o código (FR-017). Reutilizada por
+/// `print_welcome`, pela primeira linha de diagnóstico da serial, por
+/// `shell::cmd_sobre`, por `panic::handle` e pela tela de exceção fatal
+/// de `interrupts.rs` (FR-016).
+pub const VERSION: &str = concat!("proto-os v", env!("CARGO_PKG_VERSION"));
+
+/// Escreve a mensagem de boas-vindas na tela, com `VERSION` como primeira
+/// linha. Chamada pelo binário de produção (`main.rs::kernel_main`) e por
+/// testes de integração que verificam FR-016/FR-020 — extraída para a
+/// biblioteca justamente para ser testável por `cargo test`.
+pub fn print_welcome() {
+    println!("{}", VERSION);
+    println!("proto-os - sem sistema operacional embaixo");
+    println!("Este texto foi escrito direto no buffer de video VGA,");
+    println!("por este mesmo binario Rust, sem nenhum SO por baixo.");
+}
+
 /// Inicializa a infraestrutura de baixo nível do kernel: porta serial
-/// primeiro (FR-001), depois interrupções (IDT + PIC), depois memória
-/// física/paginação/heap (FR-011), com uma mensagem de diagnóstico na
-/// serial após cada etapa (FR-004, FR-018). Chamada tanto pelo binário
-/// de produção (`main.rs`) quanto pelos pontos de entrada de teste
-/// (`lib.rs`, `main.rs` em modo de teste, `tests/*.rs`).
+/// primeiro (FR-001), depois GDT/TSS (FR-001, FR-002), depois
+/// interrupções (IDT + PIC), depois memória física/paginação/heap
+/// (FR-011), com uma mensagem de diagnóstico na serial após cada etapa
+/// (FR-004, FR-018). Chamada tanto pelo binário de produção (`main.rs`)
+/// quanto pelos pontos de entrada de teste (`lib.rs`, `main.rs` em modo
+/// de teste, `tests/*.rs`).
 pub fn init(boot_info: &'static bootloader::BootInfo) {
     serial::init();
-    serial_println!("[boot] iniciado");
+    serial_println!("[boot] {} iniciado", VERSION);
+    gdt::init();
+    serial_println!("[boot] gdt/tss ativos");
     interrupts::init();
     serial_println!("[boot] interrupcoes ativas");
     memory::init(boot_info);

@@ -28,3 +28,10 @@ fn panic(info: &PanicInfo) -> ! {
 fn kernel_inicializa_ate_o_prompt_ficar_pronto() {
     proto_os::shell::print_prompt();
 }
+
+#[test_case]
+fn boas_vindas_mostra_a_versao() {
+    proto_os::vga_buffer::clear_screen();
+    proto_os::print_welcome();
+    assert!(proto_os::vga_buffer::screen_contains(proto_os::VERSION));
+}

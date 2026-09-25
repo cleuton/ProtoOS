@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "proto_os"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bootloader",
  "lazy_static",

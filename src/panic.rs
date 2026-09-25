@@ -7,20 +7,30 @@ use core::fmt::Write;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-/// `true` assim que o primeiro panic começa a ser tratado. Usado para
-/// detectar um panic reentrante (um panic disparado dentro do próprio
-/// tratamento de panic).
+/// `true` assim que o primeiro panic **ou** a primeira exceção fatal
+/// (`interrupts::fatal_exception`) começa a ser tratada — as duas
+/// situações compartilham a mesma trava porque compartilham o mesmo
+/// risco: um segundo evento fatal reentrante tentando travar `WRITER`/
+/// `SERIAL1` enquanto o primeiro ainda os segura.
 static PANICKING: AtomicBool = AtomicBool::new(false);
+
+/// Marca o início de um panic ou de uma exceção fatal. Devolve `true` se
+/// já havia um panic ou uma exceção fatal em andamento (reentrante) —
+/// nesse caso, o chamador não deve tentar travar `WRITER`/`SERIAL1` de
+/// novo, só escrever na serial (se conseguir) e parar a CPU.
+pub(crate) fn enter_fatal_handler() -> bool {
+    PANICKING.swap(true, Ordering::SeqCst)
+}
 
 /// Ponto de entrada chamado pelo `#[panic_handler]` em `src/main.rs`.
 pub fn handle(info: &PanicInfo) -> ! {
-    if PANICKING.swap(true, Ordering::SeqCst) {
-        // Já estávamos tratando um panic quando este segundo panic
-        // disparou (ex.: um bug no próprio código de formatação da
-        // mensagem). Não tentamos escrever na tela de novo — o Mutex do
-        // WRITER pode já estar travado pelo primeiro panic — então vamos
-        // direto parar a CPU, preservando a última mensagem válida que já
-        // estava na tela.
+    if enter_fatal_handler() {
+        // Já estávamos tratando um panic ou uma exceção fatal quando
+        // este segundo evento disparou (ex.: um bug no próprio código de
+        // formatação da mensagem). Não tentamos escrever na tela de novo
+        // — o Mutex do WRITER pode já estar travado pelo primeiro evento
+        // — então vamos direto parar a CPU, preservando a última
+        // mensagem válida que já estava na tela.
         halt_loop();
     }
 
@@ -29,7 +39,7 @@ pub fn handle(info: &PanicInfo) -> ! {
     let mut writer = WRITER.lock();
     // `write_str`/`write!` sobre `Writer` nunca falham (ver vga_buffer.rs),
     // então ignorar o `Result` aqui não esconde nenhum erro real possível.
-    let _ = writer.write_str("\n[PANIC] proto-os parou: ");
+    let _ = write!(writer, "\n[PANIC] {} parou: ", crate::VERSION);
     let _ = write!(writer, "{}", info);
     drop(writer);
 

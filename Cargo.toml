@@ -1,6 +1,6 @@
 [package]
 name = "proto_os"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 
 [dependencies]
@@ -21,6 +21,14 @@ features = ["spin_no_std"]
 
 [[test]]
 name = "should_panic"
+harness = false
+
+[[test]]
+name = "page_fault"
+harness = false
+
+[[test]]
+name = "double_fault"
 harness = false
 
 [package.metadata.bootimage]

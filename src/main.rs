@@ -7,7 +7,7 @@
 use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 #[cfg(not(test))]
-use proto_os::{interrupts, keyboard, panic, println, serial_println, shell, vga_buffer};
+use proto_os::{interrupts, keyboard, panic, serial_println, shell, vga_buffer};
 
 #[cfg(not(test))]
 entry_point!(kernel_main);
@@ -17,9 +17,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     proto_os::init(boot_info);
 
     vga_buffer::clear_screen();
-    println!("proto-os - sem sistema operacional embaixo");
-    println!("Este texto foi escrito direto no buffer de video VGA,");
-    println!("por este mesmo binario Rust, sem nenhum SO por baixo.");
+    proto_os::print_welcome();
 
     shell::print_prompt();
     serial_println!("[boot] prompt pronto");

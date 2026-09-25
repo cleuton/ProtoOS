@@ -525,3 +525,199 @@ ser maior que seu tamanho (a estratégia de crescimento do `Vec` da
 biblioteca padrão dobra a capacidade quando ela se esgota, em vez de
 realocar a cada elemento).
 
+## Exceções da CPU: quando o próprio processador interrompe o código
+
+Desde o Marco 1, o kernel já lida com **interrupções**: eventos externos
+assíncronos, como uma tecla pressionada (IRQ1) — algo que pode acontecer
+a qualquer momento, sem relação com a instrução que estava rodando.
+**Exceções** são parecidas (usam a mesma tabela, a IDT, e o mesmo
+mecanismo de hardware para desviar a execução), mas são **síncronas**: o
+próprio processador as dispara, no meio da execução de uma instrução
+específica, porque essa instrução tentou fazer algo que não pode —
+acessar uma página de memória não mapeada, executar um opcode que não
+existe, violar uma regra de proteção. Cada exceção tem um vetor fixo na
+IDT (os primeiros 32, reservados pela arquitetura — é por isso que as
+IRQs de hardware começam no vetor 32, como o Marco 1 já explicou) e,
+para algumas delas, o processador empilha um **código de erro** de 64
+bits com detalhes sobre o que deu errado, antes mesmo de chamar o
+handler.
+
+Até este marco, o kernel só tratava duas: breakpoint (`#BP`, vetor 3,
+disparada pela instrução `int3`) e double fault (`#DF`, vetor 8). Todas
+as outras exceções — inclusive page fault e instrução inválida — não
+tinham handler nenhum. E é exatamente aí que mora o problema que este
+marco resolve.
+
+## O que acontecia sem handler: double fault em cascata, depois triple fault
+
+Quando o processador tenta entregar uma exceção e a entrada
+correspondente da IDT está vazia (ou, pior, quando a própria entrega da
+exceção falha por algum outro motivo, como uma pilha inválida), ele não
+desiste — ele dispara uma segunda exceção, o **double fault** (`#DF`),
+dando ao kernel uma última chance de reagir. Um estouro de pilha é
+exatamente esse caso: a instrução que tenta empilhar mais um quadro
+sobre uma pilha já cheia provoca uma falha de página (a próxima posição
+da pilha não tem uma página válida por baixo) — e, como o próprio
+handler dessa falha de página *também* precisa de espaço de pilha para
+rodar, e não há mais nenhum disponível, o processador não consegue nem
+entregar o handler de page fault. Isso vira um double fault.
+
+Mas até este marco, o double fault também rodava na *mesma* pilha (a do
+kernel) — e se ela já estava esgotada, tentar entregar o *handler* do
+double fault também falhava. Quando isso acontece dentro de um double
+fault, o processador não tem mais para onde escalar: ele dispara um
+**triple fault**, que nenhum sistema operacional trata — é tratado pelo
+próprio hardware como "o sistema está irrecuperável", e a reação padrão
+de qualquer PC real (e do QEMU, simulando um) é reiniciar a máquina
+imediatamente, sem nenhuma mensagem. É exatamente o reboot silencioso
+que quem já mexeu com este projeto antes deste marco conhece.
+
+## A GDT: por que ainda existe em modo 64 bits
+
+A **GDT** (*Global Descriptor Table*) é uma peça herdada do modo
+protegido de 32 bits, onde ela definia segmentos de memória com bases,
+limites e permissões próprios — *segmentação*. Em modo longo (64 bits),
+a segmentação de dados está essencialmente desligada: todo endereço já é
+tratado como se começasse em zero. Mas a GDT continua existindo, porque
+o processador ainda exige um seletor de segmento de código válido no
+registrador `CS`, e é nela que o **descritor da TSS** (a seguir) precisa
+morar — a instrução `ltr` (*load task register*), que ativa a TSS, só
+sabe carregar um seletor que aponta para uma entrada da GDT.
+
+Este marco cria `src/gdt.rs` com uma GDT própria do kernel, contendo só
+duas entradas: o segmento de código do kernel (`Descriptor::kernel_code_segment()`,
+usado para recarregar `CS`) e o descritor da TSS
+(`Descriptor::tss_segment(&TSS)`). Segmentos de usuário (ring 3) ficam
+para o Marco 5, quando modo usuário exigir um segmento de código e um de
+dados próprios para rodar programas fora do kernel.
+
+## A TSS e a Interrupt Stack Table: a pilha que resolve o problema
+
+A **TSS** (*Task State Segment*), em modo 64 bits, não serve mais para
+trocar de tarefa (como fazia em 32 bits) — sobrou dela só um propósito:
+guardar pilhas que o processador troca automaticamente em certas
+situações. Uma dessas é a **Interrupt Stack Table** (IST): até sete
+ponteiros de pilha, cada um podendo ser associado a uma entrada
+específica da IDT. Quando essa associação existe, o processador troca
+para aquela pilha *antes* de chamar o handler — independentemente de
+qual pilha estava em uso no momento da falha.
+
+`src/gdt.rs` reserva uma região estática de 20 KiB
+(`DOUBLE_FAULT_STACK`, cinco páginas de 4 KiB — folga generosa sobre o
+que o handler realmente precisa: só formatar e escrever uma mensagem de
+texto, sem alocar nada do heap) e guarda o endereço do **fim** dela (a
+pilha cresce para baixo) na entrada 0 da IST, dentro da TSS. A IDT então
+associa essa entrada ao double fault:
+
+```rust
+unsafe {
+    idt.double_fault
+        .set_handler_fn(double_fault_handler)
+        .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
+}
+```
+
+Com isso, mesmo que a pilha do kernel esteja completamente estourada
+quando o double fault acontece, o processador troca para essa pilha
+reservada, intacta, antes de entrar no handler — o handler consegue
+rodar, formatar a mensagem e escrevê-la (tela e serial) normalmente. É
+exatamente o "antes e depois do reboot": sem a IST, estouro de pilha =
+triple fault = reinício silencioso; com ela, estouro de pilha = tela de
+`#DF` legível, kernel parado de forma controlada.
+
+## A tela de exceção fatal: uma função, quatro exceções
+
+`#UD` (instrução inválida), `#GP` (proteção geral), `#PF` (page fault) e
+`#DF` (double fault) são tratadas como **fatais**: o kernel ainda não
+sabe rodar programas de usuário (isso só chega no Marco 5), então não há
+"só encerrar o programa culpado" — a única resposta seria seguir
+rodando um kernel que acabou de provar que está em um estado
+inesperado. As quatro compartilham uma única função privada,
+`fatal_exception`, em `src/interrupts.rs`: ela escreve nome e sigla da
+exceção, o endereço da instrução que falhou, o código de erro (quando a
+exceção tem um) e a versão do proto-os — tudo espelhado na tela e na
+serial — e termina parando a CPU (`halt_loop`, o mesmo laço de `hlt`
+já usado pela tela de panic desde o Marco 0). Breakpoint (`#BP`)
+continua a única exceção não fatal: a tela ganha só uma linha curta, e o
+controle volta ao prompt normalmente.
+
+## Como ler o código de erro e o endereço de um page fault
+
+Page fault é a única das cinco exceções deste marco que carrega
+informação extra o bastante para valer a pena traduzir em palavras. O
+processador empilha um código de erro de 64 bits (`PageFaultErrorCode`,
+um conjunto de *bit flags*) e guarda, no registrador `CR2`, o endereço
+virtual exato que causou a falha — `fatal_exception` lê os dois e monta
+uma mensagem como esta (tela e serial têm o mesmo conteúdo):
+
+```text
+[EXCEPTION] Page Fault (#PF) - proto-os v0.4.0 parou
+endereco da instrucao: 0x...
+codigo de erro: 0x0
+endereco de falha: 0x444444459000
+acesso: leitura
+causa: pagina ausente
+proto-os v0.4.0
+```
+
+Dois bits do código de erro bastam para a interpretação em palavras: o
+bit `CAUSED_BY_WRITE` distingue leitura de escrita, e o bit
+`PROTECTION_VIOLATION` distingue "página ausente" (não havia mapeamento
+nenhum ali) de "violação de proteção" (havia mapeamento, mas o acesso
+não respeitava suas flags — por exemplo, escrever numa página só de
+leitura). O comando `falha pagina` do prompt provoca exatamente esse
+cenário de propósito: lê um byte do endereço logo após a última página
+mapeada do heap (`allocator::HEAP_START + allocator::HEAP_SIZE`) — um
+endereço que o Marco 3 nunca mapeia, então o page fault é garantido e
+previsível.
+
+## O comando `falha <tipo>`: provocando cada exceção de propósito
+
+`src/shell.rs` ganha o comando `falha <tipo>`, com cinco tipos, cada um
+provocando sua exceção da forma mais simples possível de explicar:
+
+- `falha pagina` — leitura num endereço nunca mapeado (acima).
+- `falha pilha` — uma função recursiva sem caso base. Sozinha, essa
+  recursão viraria um laço infinito sem nunca estourar a pilha, porque o
+  compilador otimizaria a chamada recursiva em cauda (*tail call*) para
+  um `jmp` que reaproveita o mesmo quadro; uma leitura volátil
+  (`volatile::Volatile::new(0u8).read()`) depois da chamada recursiva
+  impede essa otimização, forçando cada chamada a empilhar de verdade.
+- `falha opcode` — a instrução `ud2`, reservada pelo próprio manual da
+  Intel/AMD como sempre inválida, sem precisar de nenhum truque.
+- `falha protecao` — escreve num endereço virtual *não canônico*: em
+  modo longo, os bits 63 a 47 de todo endereço de 64 bits precisam ser
+  todos iguais (uma extensão de sinal do bit 47); o endereço
+  `0x8000_0000_0000_0000` viola essa regra de propósito (bit 63 ligado,
+  bit 47 desligado), o que o processador rejeita como `#GP` antes mesmo
+  de chegar a verificar se a página existe.
+- `falha breakpoint` — a instrução `int3`, a mesma exceção não fatal que
+  o Marco 1 já demonstrava.
+
+Sem argumento, ou com um tipo que não é nenhum destes cinco, o comando
+lista os tipos disponíveis em vez de provocar qualquer coisa.
+
+## Como a versão chega do `Cargo.toml` até a tela
+
+Este marco também resolve um pedido menor, mas visível em toda aula: a
+versão do proto-os precisa aparecer nas mensagens do sistema. A técnica
+é inteiramente em tempo de compilação, sem nenhum código de formatação
+em tempo de execução: `env!("CARGO_PKG_VERSION")` é uma macro do próprio
+`cargo`/`rustc` que expande para uma string literal com o valor do campo
+`version` de `Cargo.toml` — e `concat!` junta essa string com o prefixo
+`"proto-os v"` numa única constante, em `src/lib.rs`:
+
+```rust
+pub const VERSION: &str = concat!("proto-os v", env!("CARGO_PKG_VERSION"));
+```
+
+Como as duas são macros resolvidas pelo compilador, `VERSION` já nasce
+como a string completa (`"proto-os v0.4.0"`) dentro do binário
+compilado — não há leitura de arquivo, não há alocação, e não existe
+nenhum outro lugar do código onde o número da versão apareça escrito à
+mão. Todo lugar que precisa mostrar a versão — a mensagem de
+boas-vindas (`print_welcome`, chamada por `main.rs`), a primeira linha
+de diagnóstico da serial, o comando `sobre`, a tela de panic e a tela de
+exceção fatal — só lê `crate::VERSION`. Mudar a versão vira, então, uma
+mudança em um único lugar: o campo `version` de `Cargo.toml`.
+

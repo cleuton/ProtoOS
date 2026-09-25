@@ -1,10 +1,10 @@
-//! Buffer de linha e prompt de comandos mínimo (`help`, `clear`, `echo`, `sobre`, `panic`, `mem`).
+//! Buffer de linha e prompt de comandos mínimo (`help`, `clear`, `echo`, `sobre`, `panic`, `mem`, `falha`).
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use spin::Mutex;
 
-use crate::{memory, print, println, vga_buffer};
+use crate::{allocator, memory, print, println, vga_buffer, VERSION};
 
 /// Texto fixo do prompt, exibido sempre que o sistema está pronto para
 /// receber uma nova linha.
@@ -23,6 +23,10 @@ const COMMANDS: &[(&str, &str)] = &[
     ("sobre", "descreve o proto-os"),
     ("panic", "dispara um panic proposital"),
     ("mem", "mostra memoria fisica, heap, Box e Vec"),
+    (
+        "falha",
+        "provoca uma excecao de CPU para demonstracao (pagina, pilha, opcode, protecao, breakpoint)",
+    ),
 ];
 
 /// Acumulador de tamanho fixo dos caracteres digitados até o próximo
@@ -128,6 +132,7 @@ fn execute(line: &str) {
         "sobre" => cmd_sobre(),
         "panic" => cmd_panic(),
         "mem" => cmd_mem(),
+        "falha" => cmd_falha(rest),
         _ => println!("comando desconhecido: {} (digite help)", name),
     }
 }
@@ -143,6 +148,7 @@ fn cmd_echo(rest: &str) {
 }
 
 fn cmd_sobre() {
+    println!("{}", VERSION);
     println!("proto-os: demonstracao de boot bare metal em Rust, sem SO por baixo.");
     println!("Boot via BIOS, saida VGA e teclado via IRQ1, tudo no mesmo binario.");
 }
@@ -185,6 +191,80 @@ fn cmd_mem() {
         lista.capacity(),
         soma
     );
+}
+
+/// Despacha o tipo de exceção pedido (FR-012). Sem argumento ou com um
+/// tipo desconhecido, lista os tipos disponíveis sem provocar nenhuma
+/// exceção (FR-013).
+fn cmd_falha(tipo: &str) {
+    match tipo.trim() {
+        "pagina" => cmd_falha_pagina(),
+        "pilha" => cmd_falha_pilha(),
+        "opcode" => cmd_falha_opcode(),
+        "protecao" => cmd_falha_protecao(),
+        "breakpoint" => cmd_falha_breakpoint(),
+        _ => println!("tipos disponiveis: pagina, pilha, opcode, protecao, breakpoint"),
+    }
+}
+
+/// Provoca um page fault (`#PF`) de propósito: lê um byte de um endereço
+/// logo após a última página mapeada do heap (`allocator::HEAP_START +
+/// allocator::HEAP_SIZE`) — um endereço que o Marco 3 nunca mapeia.
+fn cmd_falha_pagina() {
+    let endereco = allocator::HEAP_START as u64 + allocator::HEAP_SIZE as u64;
+    // SAFETY: este endereço fica deliberadamente logo após a última
+    // página mapeada do heap (nunca mapeado — Marco 3); o page fault
+    // resultante é o comportamento esperado e intencional desta
+    // demonstração.
+    unsafe {
+        (endereco as *const u8).read_volatile();
+    }
+}
+
+/// Provoca um estouro real da pilha do kernel, que o processador converte
+/// em double fault (`#DF`) assim que a pilha atual se esgota.
+fn cmd_falha_pilha() {
+    stack_overflow();
+}
+
+/// Recursão sem caso base, deliberada: cada chamada empilha um novo
+/// quadro, até estourar a pilha. A leitura volátil depois da chamada
+/// recursiva impede o compilador de aplicar otimização de *tail call*
+/// (que transformaria a recursão num laço sem crescer a pilha, e a
+/// demonstração nunca estouraria nada).
+#[allow(unconditional_recursion)]
+fn stack_overflow() {
+    stack_overflow();
+    volatile::Volatile::new(0u8).read();
+}
+
+/// Provoca uma instrução inválida (`#UD`) de propósito.
+fn cmd_falha_opcode() {
+    // SAFETY: `ud2` é um opcode reservado, definido pelo manual
+    // Intel/AMD como sempre inválido — a instrução seguinte nunca é
+    // alcançada; a falha é o resultado intencional desta demonstração.
+    unsafe {
+        core::arch::asm!("ud2", options(noreturn));
+    }
+}
+
+/// Provoca uma violação de proteção geral (`#GP`) de propósito: escreve
+/// em um endereço virtual deliberadamente não canônico.
+fn cmd_falha_protecao() {
+    // SAFETY: este endereço é deliberadamente não canônico (bit 63
+    // ligado, bit 47 desligado) — o modo longo do x86_64 exige que os
+    // bits 63..47 de todo endereço virtual sejam iguais; qualquer acesso
+    // que viole essa regra provoca #GP por definição da arquitetura. A
+    // falha é o resultado intencional desta demonstração.
+    unsafe {
+        (0x_8000_0000_0000_0000u64 as *mut u8).write_volatile(0);
+    }
+}
+
+/// Provoca um breakpoint (`#BP`) de propósito — não fatal, o controle
+/// volta ao prompt logo em seguida.
+fn cmd_falha_breakpoint() {
+    x86_64::instructions::interrupts::int3();
 }
 
 #[cfg(test)]
@@ -294,4 +374,48 @@ mod tests {
         execute("   sobre   ");
         assert!(vga_buffer::screen_contains("proto-os"));
     }
+
+    #[test_case]
+    fn comando_sobre_mostra_a_versao() {
+        vga_buffer::clear_screen();
+        execute("sobre");
+        assert!(vga_buffer::screen_contains(crate::VERSION));
+    }
+
+    #[test_case]
+    fn comando_falha_sem_argumento_lista_tipos() {
+        vga_buffer::clear_screen();
+        execute("falha");
+        assert!(vga_buffer::screen_contains("tipos disponiveis"));
+    }
+
+    #[test_case]
+    fn comando_falha_tipo_desconhecido_lista_tipos() {
+        vga_buffer::clear_screen();
+        execute("falha xyz");
+        assert!(vga_buffer::screen_contains("tipos disponiveis"));
+    }
+
+    #[test_case]
+    fn comando_falha_breakpoint_retorna_ao_prompt() {
+        vga_buffer::clear_screen();
+        execute("falha breakpoint");
+        assert!(vga_buffer::screen_contains("#BP"));
+
+        // O controle voltou normalmente ao chamador: um comando seguinte
+        // continua funcionando (FR-010, US3 cenário 3).
+        vga_buffer::clear_screen();
+        execute("sobre");
+        assert!(vga_buffer::screen_contains("proto-os"));
+    }
+
+    // NÃO testar execute("falha pagina"), execute("falha pilha"),
+    // execute("falha opcode") ou execute("falha protecao") aqui: são
+    // exceções fatais de verdade — o kernel para em `halt_loop()` — e um
+    // `#[test_case]` que nunca retorna trava o binário de teste inteiro
+    // até o tempo máximo de execução esgotar, o mesmo cuidado já tomado
+    // para o comando `panic` (ver comentário acima, seção "Interpretação
+    // de comandos"). A cobertura fica por conta da validação manual
+    // (`quickstart.md`) e dos testes de integração dedicados
+    // (`tests/page_fault.rs`, `tests/double_fault.rs`).
 }

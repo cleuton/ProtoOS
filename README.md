@@ -26,15 +26,17 @@ sistema de arquivos ou multitarefa completa.
 
 ## Status
 
-**Versão atual: 0.3.0.** Os Marcos 0 (boot em modo texto VGA, com
+**Versão atual: 0.4.0.** Os Marcos 0 (boot em modo texto VGA, com
 mensagem de boas-vindas, rolagem e tratamento de panic legível), 1
 (interrupções, teclado e prompt de comandos), 2 (infraestrutura de
-depuração: saída serial e testes automatizados dentro do QEMU) e 3
-(memória: alocador de frames físicos, paginação e heap do kernel) estão
-concluídos e são o que este repositório executa hoje. Os Marcos 4 em
-diante continuam planejados. A demonstração original de palestra, no
-formato usado em aula, está preservada na tag git `v1.0-demo` e continua
-podendo ser usada como está.
+depuração: saída serial e testes automatizados dentro do QEMU), 3
+(memória: alocador de frames físicos, paginação e heap do kernel) e 4
+(proteção: GDT e TSS próprias, handlers para as exceções principais,
+double fault com pilha dedicada) estão concluídos e são o que este
+repositório executa hoje. Os Marcos 5 em diante continuam planejados. A
+demonstração original de palestra, no formato usado em aula, está
+preservada na tag git `v1.0-demo` e continua podendo ser usada como
+está.
 
 ## Roadmap
 
@@ -48,7 +50,7 @@ detalhes de cada um vêm na sequência.
 | 1. Interrupções, teclado e prompt | Tratar interrupções de hardware, ler o teclado e oferecer um prompt de comandos fixos. | Digitar `help` no prompt e ver a resposta. | Concluído |
 | 2. Infraestrutura de depuração | Ter saída serial e testes automatizados rodando dentro do QEMU. | `cargo test` executando testes do kernel dentro do QEMU. | Concluído |
 | 3. Memória | Alocar frames físicos e páginas, e ter um alocador de heap dentro do kernel. | `Vec` e `Box` funcionando dentro do kernel, visíveis por um comando do prompt. | Concluído |
-| 4. Proteção | Ter GDT e TSS próprias e tratar as exceções principais, incluindo page fault e double fault com pilha dedicada. | Provocar um page fault e ver uma mensagem legível em vez de reboot. | Planejado |
+| 4. Proteção | Ter GDT e TSS próprias e tratar as exceções principais, incluindo page fault e double fault com pilha dedicada. | Provocar um page fault e ver uma mensagem legível em vez de reboot. | Concluído |
 | **5. Primeiro programa de usuário (marco central)** | Rodar o primeiro programa de usuário em modo protegido (ring 3), usando um mecanismo de syscall e um carregador de executáveis ELF64 embutidos na imagem de boot. | Comando `run hello` no prompt executa um programa em modo usuário que imprime na tela e retorna ao prompt. | Planejado |
 | 6. Interface de programação | Ampliar o contrato de syscalls (teclado, memória, código de saída) e oferecer uma biblioteca de runtime para quem escreve programas. | Um programa escrito por um aluno lê entrada do teclado e responde; um programa com acesso inválido à memória é encerrado sem derrubar o kernel. | Planejado |
 | 7. Multitarefa | Trocar de contexto entre mais de um programa carregado, primeiro de forma cooperativa e depois preemptiva. | Dois programas intercalando saída na tela. | Planejado |
@@ -79,10 +81,15 @@ fixo de 100 KiB mapeado no boot, com um alocador global (`Box`, `Vec`,
 física utilizável, a posição/tamanho do heap, um `Box` com seu endereço,
 e um `Vec` construído a partir de vazio. Depende do Marco 2.
 
-**Marco 4. Proteção.** GDT e TSS próprias, handlers para as exceções
-principais, incluindo page fault e double fault com pilha dedicada.
-Demonstrável: provocar um page fault e ver uma mensagem legível em vez de
-reboot. Depende do Marco 3.
+**Marco 4. Proteção.** Concluído. GDT própria (segmento de código do
+kernel + descritor da TSS) e uma TSS com uma pilha dedicada de 20 KiB na
+Interrupt Stack Table para o double fault; handlers para as cinco
+exceções principais (`#BP`, `#UD`, `#GP`, `#PF`, `#DF`), com tela legível
+(tela + serial) para as quatro fatais. Demonstrável: o comando `falha
+<tipo>` no prompt provoca cada exceção de propósito — `falha pagina`
+mostra uma mensagem legível em vez de reboot, e `falha pilha` prova que
+um estouro de pilha do kernel não reinicia mais o QEMU. Depende do
+Marco 3.
 
 **Marco 5. Primeiro programa de usuário (marco central do roadmap).**
 Ring 3, mecanismo de syscall, primeira versão do contrato de syscalls com
@@ -225,7 +232,8 @@ Isso vai: compilar o kernel para o target bare-metal customizado deste
 projeto (`x86_64-proto_os.json`), gerar uma imagem de boot com `bootimage`,
 e abrir uma janela do QEMU que dá boot via BIOS direto nesse binário. Em
 poucos segundos você deve ver uma tela de texto colorida com uma mensagem
-de boas-vindas, seguida de um prompt `proto-os> ` pronto para digitação,
+de boas-vindas — cuja primeira linha é `proto-os v0.4.0`, a versão atual
+do projeto — seguida de um prompt `proto-os> ` pronto para digitação,
 não um terminal comum.
 
 Clique na janela do QEMU para garantir que ela tem o foco do teclado e
@@ -233,11 +241,13 @@ digite um comando. O layout de teclado suportado é **US QWERTY, somente
 ASCII**: não há suporte a acentuação, ABNT2 ou outros layouts.
 
 Ao mesmo tempo, o próprio terminal onde você rodou `cargo run` passa a
-mostrar mensagens de diagnóstico escritas pelo kernel (início do boot,
-interrupções ativadas, prompt pronto, e qualquer breakpoint, double
-fault ou panic que aconteça) — um canal de texto separado da tela do
-QEMU, que pode ser rolado, copiado e colado. Não é preciso nenhum passo
-manual adicional para isso: é o mesmo `cargo run` de sempre.
+mostrar mensagens de diagnóstico escritas pelo kernel (início do boot com
+a versão, GDT/TSS ativas, interrupções ativadas, memória inicializada,
+prompt pronto, e qualquer breakpoint, instrução inválida, violação de
+proteção, page fault, double fault ou panic que aconteça) — um canal de
+texto separado da tela do QEMU, que pode ser rolado, copiado e colado.
+Não é preciso nenhum passo manual adicional para isso: é o mesmo
+`cargo run` de sempre.
 
 ### Comandos disponíveis
 
@@ -246,9 +256,10 @@ manual adicional para isso: é o mesmo `cargo run` de sempre.
 | `help` | Lista os comandos disponíveis |
 | `clear` | Limpa a tela e reposiciona o prompt no topo |
 | `echo <texto>` | Escreve `<texto>` na linha seguinte |
-| `sobre` | Mostra uma descrição curta do proto-os |
+| `sobre` | Mostra uma descrição curta do proto-os, incluindo a versão atual |
 | `panic` | Dispara um panic proposital (mesma tela de erro do tratamento de panic) |
 | `mem` | Mostra memória física utilizável, posição/tamanho do heap, um `Box` e um `Vec` |
+| `falha <tipo>` | Provoca uma exceção de CPU de propósito: `pagina` (`#PF`), `pilha` (`#DF`), `opcode` (`#UD`), `protecao` (`#GP`) ou `breakpoint` (`#BP`); sem argumento ou com um tipo desconhecido, lista os tipos disponíveis |
 
 Backspace apaga o último caractere digitado; Enter executa a linha. Um
 comando não reconhecido mostra uma mensagem de erro sugerindo `help`.
@@ -311,8 +322,10 @@ correspondente no [`WALKTHROUGH.md`](./WALKTHROUGH.md).
 
 ## Estrutura do projeto
 
-- `src/lib.rs`: declara os módulos do kernel, inicializa a porta serial,
-  as interrupções e a memória (frames, paginação, heap), e contém a
+- `src/lib.rs`: declara os módulos do kernel, expõe a identificação de
+  versão (`VERSION`, derivada de `Cargo.toml`) e a mensagem de
+  boas-vindas (`print_welcome`), inicializa a porta serial, a GDT/TSS, as
+  interrupções e a memória (frames, paginação, heap), e contém a
   infraestrutura de testes (o executor de testes, o tratamento de panic
   em modo de teste e a comunicação com o QEMU sobre sucesso ou falha).
 - `src/main.rs`: o binário de produção — ponto de entrada do boot; limpa
@@ -326,9 +339,17 @@ correspondente no [`WALKTHROUGH.md`](./WALKTHROUGH.md).
   de teste.
 - `src/panic.rs`: o que acontece quando o sistema encontra um erro
   irrecuperável (panic); mostra uma mensagem legível na tela (e também na
-  serial) em vez de travar ou reiniciar sem explicação.
-- `src/interrupts.rs`: a IDT, os handlers de breakpoint/double
-  fault/teclado (IRQ1) e a reprogramação do PIC 8259.
+  serial) em vez de travar ou reiniciar sem explicação. A guarda de
+  reentrância que evita travar reescrevendo a tela é compartilhada com as
+  telas de exceção fatal de `interrupts.rs`.
+- `src/gdt.rs`: a GDT do kernel (segmento de código + descritor da TSS) e
+  a TSS, com uma pilha dedicada de 20 KiB na Interrupt Stack Table para o
+  double fault.
+- `src/interrupts.rs`: a IDT, os handlers das cinco exceções principais
+  (`#BP`, `#UD`, `#GP`, `#PF`, `#DF`, este último rodando na pilha
+  dedicada da TSS/IST) e a reprogramação do PIC 8259 para o teclado
+  (IRQ1). As quatro exceções fatais compartilham uma única função que
+  monta a tela de exceção (tela + serial).
 - `src/keyboard.rs`: tradução de scancodes (Scan Code Set 1) para ASCII,
   layout US QWERTY.
 - `src/memory.rs`: o alocador de frames físicos a partir do mapa de
@@ -338,11 +359,14 @@ correspondente no [`WALKTHROUGH.md`](./WALKTHROUGH.md).
   alocador global (`Box`, `Vec`, `String`, ...) e o tratamento de heap
   esgotado.
 - `src/shell.rs`: o buffer de linha e o prompt de comandos (`help`,
-  `clear`, `echo`, `sobre`, `panic`, `mem`).
+  `clear`, `echo`, `sobre`, `panic`, `mem`, `falha <tipo>`).
 - `tests/`: os testes de integração, cada um iniciando o kernel do zero
-  em seu próprio binário — um teste de boot, um teste cujo resultado
-  esperado é um panic, e testes do alocador de frames, da paginação e do
-  heap.
+  em seu próprio binário — um teste de boot (que também confere a versão
+  na mensagem de boas-vindas), um teste cujo resultado esperado é um
+  panic, testes do alocador de frames, da paginação e do heap, e dois
+  testes dedicados de proteção: `double_fault.rs` (prova que o handler
+  roda na pilha dedicada da IST) e `page_fault.rs` (prova o endereço de
+  falha esperado).
 - `x86_64-proto_os.json`: a especificação do target bare-metal customizado
   (sem sistema operacional por baixo).
 - `.cargo/config.toml`: configura o `cargo run`/`cargo test` para usar o
