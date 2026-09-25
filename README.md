@@ -2,6 +2,10 @@
 
 ![](imagem.jpg)
 
+# ESTE REPOSITÓRIO SERÁ DESCONTINUADO EM BREVE!
+
+[**ATENÇÃO: ESTE PROJETO FOI TRANSFERIDO PARA OUTRO REPOSITÓRIO - os-rust**](https://github.com/cleuton/os-rust)
+
 O proto-os começou como uma demonstração mínima de "programação sem
 sistema operacional" em Rust: um binário que dá boot direto via BIOS em
 uma máquina virtual QEMU, escreve texto na tela usando o buffer de vídeo
