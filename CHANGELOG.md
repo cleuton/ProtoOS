@@ -5,6 +5,46 @@ uma versão por vez. O formato segue, livremente,
 [Keep a Changelog](https://keepachangelog.com/), e as versões seguem
 [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.3.0] - 2026-09-25
+
+Marco 3: memória — alocador de frames físicos, paginação e heap do kernel.
+
+### Adicionado
+
+- Alocador de frames físicos de 4 KiB (`BootInfoFrameAllocator`,
+  `src/memory.rs`) a partir do mapa de memória entregue pelo bootloader.
+- Tradução de endereço virtual para físico e criação de mapeamentos
+  novos na tabela de páginas ativa (`memory::translate_addr`,
+  `memory::map_page`), usando o mapeamento completo da memória física
+  (feature `map_physical_memory` do `bootloader`).
+- Heap do kernel: faixa fixa de 100 KiB (`src/allocator.rs`), mapeada no
+  boot, com um alocador global (`linked_list_allocator`) — `Box`, `Vec`
+  e o resto da crate `alloc` passam a funcionar em qualquer parte do
+  kernel.
+- Comando `mem` no prompt: mostra a memória física utilizável, a
+  posição/tamanho do heap, um `Box` com seu valor e endereço, e um `Vec`
+  construído a partir de vazio com tamanho, capacidade e soma.
+- Nova linha de diagnóstico na serial ao final da inicialização de
+  memória.
+- 11 testes novos: 3 testes de integração (`tests/frame_allocator.rs`,
+  `tests/paging.rs`, `tests/heap_allocation.rs`) e um teste de unidade
+  do comando `mem` em `src/shell.rs`.
+- Capítulo novo no `WALKTHROUGH.md` sobre memória física, frames e
+  páginas, a tabela de páginas de 4 níveis, criação de mapeamentos, e o
+  heap.
+
+### Alterado
+
+- Versão do projeto: `0.2.0` → `0.3.0`.
+- `proto_os::init` passa a receber o `BootInfo` entregue pelo
+  bootloader (mapa de memória e deslocamento da física completa).
+- `Cargo.toml`: dependência `linked_list_allocator` nova; `bootloader`
+  ganha a feature `map_physical_memory`.
+- `.cargo/config.toml`: `build-std` ganha `"alloc"`.
+- `README.md`: Marco 3 marcado como concluído na tabela de marcos, nos
+  detalhes de cada marco e na seção Status; comando `mem` na tabela de
+  comandos; estrutura do projeto atualizada.
+
 ## [0.2.0] - 2026-09-24
 
 Marco 2: infraestrutura de depuração e testes automatizados.

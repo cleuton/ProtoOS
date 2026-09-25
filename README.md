@@ -26,11 +26,12 @@ sistema de arquivos ou multitarefa completa.
 
 ## Status
 
-**Versão atual: 0.2.0.** Os Marcos 0 (boot em modo texto VGA, com
+**Versão atual: 0.3.0.** Os Marcos 0 (boot em modo texto VGA, com
 mensagem de boas-vindas, rolagem e tratamento de panic legível), 1
-(interrupções, teclado e prompt de comandos) e 2 (infraestrutura de
-depuração: saída serial e testes automatizados dentro do QEMU) estão
-concluídos e são o que este repositório executa hoje. Os Marcos 3 em
+(interrupções, teclado e prompt de comandos), 2 (infraestrutura de
+depuração: saída serial e testes automatizados dentro do QEMU) e 3
+(memória: alocador de frames físicos, paginação e heap do kernel) estão
+concluídos e são o que este repositório executa hoje. Os Marcos 4 em
 diante continuam planejados. A demonstração original de palestra, no
 formato usado em aula, está preservada na tag git `v1.0-demo` e continua
 podendo ser usada como está.
@@ -46,7 +47,7 @@ detalhes de cada um vêm na sequência.
 | 0. Boot e texto VGA | Dar boot via BIOS e escrever texto em modo VGA, com tratamento de panic legível. | Mensagem de boas-vindas, rolagem de texto e uma tela de panic legível. | Concluído |
 | 1. Interrupções, teclado e prompt | Tratar interrupções de hardware, ler o teclado e oferecer um prompt de comandos fixos. | Digitar `help` no prompt e ver a resposta. | Concluído |
 | 2. Infraestrutura de depuração | Ter saída serial e testes automatizados rodando dentro do QEMU. | `cargo test` executando testes do kernel dentro do QEMU. | Concluído |
-| 3. Memória | Alocar frames físicos e páginas, e ter um alocador de heap dentro do kernel. | `Vec` e `Box` funcionando dentro do kernel, visíveis por um comando do prompt. | Planejado |
+| 3. Memória | Alocar frames físicos e páginas, e ter um alocador de heap dentro do kernel. | `Vec` e `Box` funcionando dentro do kernel, visíveis por um comando do prompt. | Concluído |
 | 4. Proteção | Ter GDT e TSS próprias e tratar as exceções principais, incluindo page fault e double fault com pilha dedicada. | Provocar um page fault e ver uma mensagem legível em vez de reboot. | Planejado |
 | **5. Primeiro programa de usuário (marco central)** | Rodar o primeiro programa de usuário em modo protegido (ring 3), usando um mecanismo de syscall e um carregador de executáveis ELF64 embutidos na imagem de boot. | Comando `run hello` no prompt executa um programa em modo usuário que imprime na tela e retorna ao prompt. | Planejado |
 | 6. Interface de programação | Ampliar o contrato de syscalls (teclado, memória, código de saída) e oferecer uma biblioteca de runtime para quem escreve programas. | Um programa escrito por um aluno lê entrada do teclado e responde; um programa com acesso inválido à memória é encerrado sem derrubar o kernel. | Planejado |
@@ -69,10 +70,14 @@ testes automatizados rodando dentro do QEMU, com resultado reportado ao
 host. Demonstrável: `cargo test` rodando testes do kernel no QEMU.
 Depende do Marco 1.
 
-**Marco 3. Memória.** Alocador de frames físicos a partir do mapa de
-memória do bootloader, gerenciamento de tabelas de páginas e um alocador
-de heap no kernel. Demonstrável: `Vec` e `Box` funcionando dentro do
-kernel, visíveis por um comando do prompt. Depende do Marco 2.
+**Marco 3. Memória.** Concluído. Alocador de frames físicos a partir do
+mapa de memória do bootloader (usando o mapeamento completo da física
+que a feature `map_physical_memory` do `bootloader` fornece),
+tradução/criação de mapeamentos na tabela de páginas ativa, e um heap
+fixo de 100 KiB mapeado no boot, com um alocador global (`Box`, `Vec`,
+`String`, ...). Demonstrável: o comando `mem` no prompt mostra a memória
+física utilizável, a posição/tamanho do heap, um `Box` com seu endereço,
+e um `Vec` construído a partir de vazio. Depende do Marco 2.
 
 **Marco 4. Proteção.** GDT e TSS próprias, handlers para as exceções
 principais, incluindo page fault e double fault com pilha dedicada.
@@ -243,6 +248,7 @@ manual adicional para isso: é o mesmo `cargo run` de sempre.
 | `echo <texto>` | Escreve `<texto>` na linha seguinte |
 | `sobre` | Mostra uma descrição curta do proto-os |
 | `panic` | Dispara um panic proposital (mesma tela de erro do tratamento de panic) |
+| `mem` | Mostra memória física utilizável, posição/tamanho do heap, um `Box` e um `Vec` |
 
 Backspace apaga o último caractere digitado; Enter executa a linha. Um
 comando não reconhecido mostra uma mensagem de erro sugerindo `help`.
@@ -305,10 +311,10 @@ correspondente no [`WALKTHROUGH.md`](./WALKTHROUGH.md).
 
 ## Estrutura do projeto
 
-- `src/lib.rs`: declara os módulos do kernel, inicializa a porta serial e
-  as interrupções, e contém a infraestrutura de testes (o executor de
-  testes, o tratamento de panic em modo de teste e a comunicação com o
-  QEMU sobre sucesso ou falha).
+- `src/lib.rs`: declara os módulos do kernel, inicializa a porta serial,
+  as interrupções e a memória (frames, paginação, heap), e contém a
+  infraestrutura de testes (o executor de testes, o tratamento de panic
+  em modo de teste e a comunicação com o QEMU sobre sucesso ou falha).
 - `src/main.rs`: o binário de produção — ponto de entrada do boot; limpa
   a tela, escreve a mensagem de boas-vindas e roda o laço ocioso que
   alimenta o prompt de comandos com o teclado.
@@ -325,13 +331,21 @@ correspondente no [`WALKTHROUGH.md`](./WALKTHROUGH.md).
   fault/teclado (IRQ1) e a reprogramação do PIC 8259.
 - `src/keyboard.rs`: tradução de scancodes (Scan Code Set 1) para ASCII,
   layout US QWERTY.
+- `src/memory.rs`: o alocador de frames físicos a partir do mapa de
+  memória do bootloader, e a tradução/criação de mapeamentos na tabela de
+  páginas ativa (usando o mapeamento completo da física).
+- `src/allocator.rs`: a faixa fixa de endereços virtuais do heap, o
+  alocador global (`Box`, `Vec`, `String`, ...) e o tratamento de heap
+  esgotado.
 - `src/shell.rs`: o buffer de linha e o prompt de comandos (`help`,
-  `clear`, `echo`, `sobre`, `panic`).
+  `clear`, `echo`, `sobre`, `panic`, `mem`).
 - `tests/`: os testes de integração, cada um iniciando o kernel do zero
-  em seu próprio binário — incluindo um teste de boot e um teste cujo
-  resultado esperado é um panic.
+  em seu próprio binário — um teste de boot, um teste cujo resultado
+  esperado é um panic, e testes do alocador de frames, da paginação e do
+  heap.
 - `x86_64-proto_os.json`: a especificação do target bare-metal customizado
   (sem sistema operacional por baixo).
 - `.cargo/config.toml`: configura o `cargo run`/`cargo test` para usar o
-  `bootimage` como *runner* automaticamente.
+  `bootimage` como *runner* automaticamente, e habilita a compilação da
+  crate `alloc` para este target customizado.
 - `CHANGELOG.md`: o histórico de mudanças do projeto, versão por versão.

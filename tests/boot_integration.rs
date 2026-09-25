@@ -13,7 +13,8 @@ use core::panic::PanicInfo;
 
 entry_point!(main);
 
-fn main(_boot_info: &'static BootInfo) -> ! {
+fn main(boot_info: &'static BootInfo) -> ! {
+    proto_os::init(boot_info);
     test_main();
     proto_os::panic::halt_loop();
 }
@@ -25,6 +26,5 @@ fn panic(info: &PanicInfo) -> ! {
 
 #[test_case]
 fn kernel_inicializa_ate_o_prompt_ficar_pronto() {
-    proto_os::init();
     proto_os::shell::print_prompt();
 }

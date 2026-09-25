@@ -340,7 +340,8 @@ use core::panic::PanicInfo;
 
 entry_point!(main);
 
-fn main(_boot_info: &'static BootInfo) -> ! {
+fn main(boot_info: &'static BootInfo) -> ! {
+    proto_os::init(boot_info);
     test_main();
     proto_os::panic::halt_loop();
 }
@@ -352,13 +353,175 @@ fn panic(info: &PanicInfo) -> ! {
 
 #[test_case]
 fn meu_teste_de_integracao() {
-    proto_os::init();
     // ... o resto do cenário sob teste
 }
 ```
 
 Cada arquivo em `tests/` dá boot no kernel do zero, no seu próprio
-processo QEMU — por isso `proto_os::init()` precisa ser chamado de novo
-em cada um, mesmo que o teste anterior já o tenha chamado no seu próprio
-binário.
+processo QEMU — por isso `proto_os::init(boot_info)` precisa ser chamado
+de novo em cada um, mesmo que o teste anterior já o tenha chamado no seu
+próprio binário. Desde o Marco 3, `init` recebe o `boot_info` que o
+próprio `entry_point!` entrega (o mapa de memória e o deslocamento da
+física completa que a inicialização de memória precisa).
+
+## Memória física: o mapa que o bootloader entrega
+
+Até aqui, tudo que o kernel usou — a tela, o teclado, a serial — são
+endereços fixos e conhecidos de antemão. Memória é diferente: quanta RAM
+a máquina tem, e quais pedaços dela já estão ocupados (pelo próprio
+kernel, pelas tabelas de páginas, por dispositivos), só o bootloader sabe
+dizer, porque é ele quem conversa com a BIOS para descobrir isso antes do
+nosso código sequer começar a rodar.
+
+É por isso que a crate `bootloader` entrega, junto com a chamada de
+`entry_point!`, uma estrutura `BootInfo` com um `memory_map`: uma lista de
+regiões da memória física, cada uma com um início, um fim e um tipo —
+`Usable` (livre, o kernel pode usar), `Kernel`, `PageTable`, `Reserved`,
+e outros. O `memory_map` é só leitura: o kernel nunca escreve nele, só
+consulta. `src/memory.rs` usa exatamente essa lista, e só ela, para saber
+o que pode entregar como memória livre — nunca um palpite, nunca uma
+suposição sobre o tamanho da RAM.
+
+## Frames e páginas: os blocos de 4 KiB dos dois lados
+
+A memória física é dividida em blocos de 4 KiB chamados **frames**; o
+espaço de endereços que o processador enxerga (memória *virtual*) é
+dividido nos mesmos 4 KiB, chamados **páginas**. Um frame é identificado
+só pelo endereço físico onde começa; uma página, pelo endereço virtual.
+A ideia central de memória virtual é que cada página pode estar mapeada
+em qualquer frame — ou em nenhum — e é o processador, consultando uma
+estrutura chamada tabela de páginas, quem faz essa tradução a cada acesso
+à memória, de forma transparente para o código que só enxerga endereços
+virtuais.
+
+`src/memory.rs` define `BootInfoFrameAllocator`: ele percorre as regiões
+`Usable` do `memory_map`, quebra cada uma em frames de 4 KiB, e entrega um
+frame novo a cada chamada de `allocate_frame()` — sem nunca repetir um já
+entregue, e devolvendo `None` quando a memória utilizável acaba (isso é
+tudo que o tipo `Option` já garante: não existe um "frame inválido"
+disfarçado de frame válido). Devolver frames ao alocador não é algo que
+este marco precisa fazer: o único consumidor é o heap, montado uma única
+vez no boot.
+
+## A tabela de páginas de 4 níveis, e como o kernel consegue editá-la
+
+No `x86_64`, a tradução de um endereço virtual para um físico passa por
+quatro níveis de tabelas (apelidadas de P4, P3, P2 e P1), cada uma com
+512 entradas — cada entrada aponta para a tabela do nível seguinte, até a
+última (P1) apontar para o frame físico de fato. O processador sabe onde
+está a P4 ativa porque o endereço físico dela fica guardado num
+registrador especial, `CR3`.
+
+Só que ler ou editar essas tabelas exige acessar a memória física onde
+elas vivem — e o código do kernel só enxerga endereços *virtuais*. É aqui
+que entra a mesma peça central deste marco: a feature `map_physical_memory`
+da crate `bootloader` (habilitada em `Cargo.toml`) faz o bootloader mapear
+**toda** a memória física, de uma vez, começando em um endereço virtual
+fixo — o `physical_memory_offset`, também entregue dentro do `BootInfo`.
+Assim, para acessar o frame físico que começa no endereço `F`, basta
+somar `F + physical_memory_offset` e usar esse resultado como um endereço
+virtual comum. `active_level_4_table`, em `src/memory.rs`, usa exatamente
+essa soma para chegar até a P4 ativa (lida de `CR3`) e devolver uma
+referência mutável a ela.
+
+Em vez de caminhar os quatro níveis manualmente toda vez, o kernel usa
+`OffsetPageTable`, um tipo pronto da crate `x86_64` que já sabe fazer essa
+aritmética — dado o `physical_memory_offset` e a P4 ativa, ele oferece
+`translate_addr` (endereço virtual → físico, ou `None` se a página não
+tem mapeamento — `memory::translate_addr`) e `map_to` (cria um mapeamento
+novo, criando as tabelas intermediárias que faltarem — usado por
+`memory::map_page`).
+
+## Como um mapeamento novo é criado
+
+Mapear uma página nova em um frame físico livre é: pegar um frame do
+`BootInfoFrameAllocator`, e chamar `map_to` nele, com as flags `PRESENT`
+(a página existe) e `WRITABLE` (pode ser escrita) — nunca
+`USER_ACCESSIBLE` neste marco, porque programas de usuário em ring 3 só
+chegam no Marco 5. Se a página já tivesse mapeamento, `map_to` devolve um
+erro explícito (`PageAlreadyMapped`) em vez de sobrescrever silenciosamente
+o que já estava lá — um mapeamento apontando para o frame errado seria um
+tipo de bug muito difícil de rastrear depois.
+
+`memory::map_page` empacota esses passos numa função só, usada tanto
+pelos testes de integração (`tests/paging.rs`) quanto, indiretamente,
+pela montagem do heap a seguir.
+
+## O heap: por que o kernel precisa de memória dinâmica
+
+Até este marco, toda estrutura de dados do kernel tinha um tamanho fixo,
+conhecido em tempo de compilação — o buffer da tela, a fila de scancodes,
+o buffer de linha do prompt. Isso funciona bem quando dá para prever o
+tamanho máximo de antemão, mas quebra assim que o kernel precisa de algo
+cujo tamanho só se sabe em tempo de execução (por exemplo, no Marco 5, a
+lista de segmentos de um executável ELF, que varia de programa para
+programa). É exatamente para isso que serve um **heap**: uma região de
+memória de onde o programa pode pedir blocos de tamanho variável — os
+tipos `Box` (um valor único, alocado) e `Vec` (uma lista que cresce) da
+crate `alloc` da própria biblioteca padrão do Rust são a forma idiomática
+de usar essa memória.
+
+O heap deste kernel é simples de propósito: uma faixa **fixa** de 100 KiB
+de endereços virtuais, começando em `0x_4444_4444_0000` (um endereço
+escolhido só por estar bem longe de qualquer outra coisa que o bootloader
+já tenha mapeado) — `src/allocator.rs`. No boot, `allocator::init_heap`
+mapeia, uma por uma, todas as páginas dessa faixa em frames físicos livres
+(reaproveitando exatamente o `map_page`/`map_to` explicados acima) e só
+depois registra o alocador global. Essa ordem importa: nenhuma alocação
+pode acontecer antes do heap inteiro estar mapeado.
+
+## Como o alocador de heap escolhido funciona
+
+Registrar um alocador global significa dizer ao compilador Rust: "sempre
+que algum código pedir `alloc`/`dealloc` — o que `Box::new`, `Vec::push` e
+companhia fazem por baixo dos panos — chame esta função". `src/allocator.rs`
+usa a crate `linked_list_allocator` para isso, através do atributo
+`#[global_allocator]`. O algoritmo por trás dela é uma lista encadeada de
+blocos livres: cada bloco liberado (quando um `Box`/`Vec` sai de escopo)
+volta para essa lista, disponível para a próxima alocação que couber nele
+— **mesmo que outros blocos ainda estejam em uso**, o que é justamente o
+que faz o comando `mem` poder ser digitado 100 vezes seguidas sem nunca
+esgotar a memória: cada `Box`/`Vec` que ele cria é devolvido ao final da
+mesma execução do comando.
+
+Este marco optou por usar uma crate pronta para esse algoritmo, em vez de
+escrever um alocador à mão, porque o objetivo didático aqui é entender
+memória física e paginação — o algoritmo interno de um alocador de heap
+(listas livres, blocos de tamanho fixo, e as várias formas de otimizá-los)
+é um assunto por si só, que não precisa competir pelo tempo de aula deste
+marco.
+
+E se um pedido de alocação não couber em nenhum espaço livre do heap? O
+compilador chama a função marcada com `#[alloc_error_handler]`, também em
+`src/allocator.rs` — que aqui simplesmente chama `panic!` informando o
+tamanho e o alinhamento pedidos, reaproveitando a mesma tela de panic
+legível (e a mesma linha na serial) que já existe desde o Marco 0. Um
+heap esgotado nunca trava o sistema silenciosamente nem devolve memória
+inválida — ele para de um jeito que dá para ler e entender.
+
+## O que o comando `mem` está mostrando
+
+`mem` (em `src/shell.rs`) é a prova, na tela, de tudo isso funcionando
+junto:
+
+```text
+proto-os> mem
+memoria fisica utilizavel: 123848 KiB
+heap: 0x444444440000, 100 KiB
+Box: valor=42, endereco=0x444444440000
+Vec: tamanho=10, capacidade=16, soma=55
+proto-os>
+```
+
+A primeira linha soma todas as regiões `Usable` do `memory_map` do
+bootloader (`memory::info()`) — não é a RAM total da máquina, é só a
+parte que sobrou livre depois do que o próprio bootloader e o BIOS já
+reservaram. A segunda mostra onde e do que tamanho é o heap descrito
+acima. As duas últimas alocam, de fato, um `Box` e um `Vec` — o endereço
+do `Box` cai dentro da faixa do heap (frequentemente bem no início dela,
+já que é a primeira alocação depois do boot), e o `Vec` começa vazio
+(`Vec::new()`) e cresce a cada `push`, então sua capacidade final pode
+ser maior que seu tamanho (a estratégia de crescimento do `Vec` da
+biblioteca padrão dobra a capacidade quando ela se esgota, em vez de
+realocar a cada elemento).
 

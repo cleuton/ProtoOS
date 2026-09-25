@@ -36,6 +36,15 @@ static PICS: Mutex<ChainedPics> = Mutex::new(unsafe {
     ChainedPics::new(PIC_1_OFFSET, PIC_2_OFFSET)
 });
 
+// Invariante do projeto, desde o Marco 3 (`research.md`, seção 9):
+// nenhum handler registrado nesta IDT aloca ou libera memória do heap
+// (`breakpoint_handler`/`double_fault_handler` só usam
+// `println!`/`serial_println!`; `keyboard_interrupt_handler` só empilha
+// um byte numa fila de tamanho fixo). É isso que garante que o
+// `spin::Mutex` interno do alocador global (`src/allocator.rs`) nunca
+// pode ser disputado entre o fluxo principal e uma interrupção — um
+// handler novo que precise alocar violaria este invariante e exige
+// revisão explícita antes de ser aceito.
 lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();

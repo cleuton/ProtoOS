@@ -1,15 +1,19 @@
 [package]
 name = "proto_os"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 
 [dependencies]
-bootloader = "0.9.23"
 volatile = "0.2.6"
 spin = "0.5.2"
 x86_64 = "0.15.2"
 pic8259 = "0.11.0"
 uart_16550 = "0.3.2"
+linked_list_allocator = "0.10.5"
+
+[dependencies.bootloader]
+version = "0.9.23"
+features = ["map_physical_memory"]
 
 [dependencies.lazy_static]
 version = "1.4.0"

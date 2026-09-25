@@ -13,8 +13,8 @@ use proto_os::{interrupts, keyboard, panic, println, serial_println, shell, vga_
 entry_point!(kernel_main);
 
 #[cfg(not(test))]
-fn kernel_main(_boot_info: &'static BootInfo) -> ! {
-    proto_os::init();
+fn kernel_main(boot_info: &'static BootInfo) -> ! {
+    proto_os::init(boot_info);
 
     vga_buffer::clear_screen();
     println!("proto-os - sem sistema operacional embaixo");
@@ -56,8 +56,8 @@ fn on_panic(info: &PanicInfo) -> ! {
 entry_point!(test_kernel_main);
 
 #[cfg(test)]
-fn test_kernel_main(_boot_info: &'static BootInfo) -> ! {
-    proto_os::init();
+fn test_kernel_main(boot_info: &'static BootInfo) -> ! {
+    proto_os::init(boot_info);
     test_main();
     proto_os::panic::halt_loop();
 }

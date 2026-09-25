@@ -1,8 +1,10 @@
-//! Buffer de linha e prompt de comandos mínimo (`help`, `clear`, `echo`, `sobre`, `panic`).
+//! Buffer de linha e prompt de comandos mínimo (`help`, `clear`, `echo`, `sobre`, `panic`, `mem`).
 
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use spin::Mutex;
 
-use crate::{print, println, vga_buffer};
+use crate::{memory, print, println, vga_buffer};
 
 /// Texto fixo do prompt, exibido sempre que o sistema está pronto para
 /// receber uma nova linha.
@@ -20,6 +22,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("echo", "repete o texto digitado"),
     ("sobre", "descreve o proto-os"),
     ("panic", "dispara um panic proposital"),
+    ("mem", "mostra memoria fisica, heap, Box e Vec"),
 ];
 
 /// Acumulador de tamanho fixo dos caracteres digitados até o próximo
@@ -124,6 +127,7 @@ fn execute(line: &str) {
         "echo" => cmd_echo(rest),
         "sobre" => cmd_sobre(),
         "panic" => cmd_panic(),
+        "mem" => cmd_mem(),
         _ => println!("comando desconhecido: {} (digite help)", name),
     }
 }
@@ -145,6 +149,42 @@ fn cmd_sobre() {
 
 fn cmd_panic() {
     panic!("comando panic executado no prompt");
+}
+
+/// Mostra a prova de que o kernel aloca memória dinamicamente (FR-017):
+/// memória física utilizável, posição/tamanho do heap, um `Box` com seu
+/// valor e endereço, e um `Vec` construído a partir de vazio com
+/// tamanho, capacidade e soma dos elementos. `valor` e `lista` saem de
+/// escopo ao final desta função, devolvendo a memória usada ao heap —
+/// por isso o comando pode ser repetido indefinidamente sem esgotar a
+/// memória (User Story 1, cenário 2).
+fn cmd_mem() {
+    let info = memory::info();
+    println!("memoria fisica utilizavel: {} KiB", info.usable_bytes / 1024);
+    println!(
+        "heap: {:#x}, {} KiB",
+        info.heap_start,
+        info.heap_size / 1024
+    );
+
+    let valor = Box::new(42);
+    println!(
+        "Box: valor={}, endereco={:#x}",
+        *valor,
+        &*valor as *const _ as usize
+    );
+
+    let mut lista = Vec::new();
+    for i in 1..=10 {
+        lista.push(i);
+    }
+    let soma: i32 = lista.iter().sum();
+    println!(
+        "Vec: tamanho={}, capacidade={}, soma={}",
+        lista.len(),
+        lista.capacity(),
+        soma
+    );
 }
 
 #[cfg(test)]
@@ -222,6 +262,16 @@ mod tests {
         vga_buffer::clear_screen();
         execute("sobre");
         assert!(vga_buffer::screen_contains("proto-os"));
+    }
+
+    #[test_case]
+    fn comando_mem_mostra_memoria_heap_box_e_vec() {
+        vga_buffer::clear_screen();
+        execute("mem");
+        assert!(vga_buffer::screen_contains("memoria fisica utilizavel"));
+        assert!(vga_buffer::screen_contains("heap"));
+        assert!(vga_buffer::screen_contains("Box"));
+        assert!(vga_buffer::screen_contains("Vec"));
     }
 
     #[test_case]

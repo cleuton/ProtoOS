@@ -16,8 +16,8 @@ use proto_os::{exit_qemu, serial_println, QemuExitCode};
 
 entry_point!(main);
 
-fn main(_boot_info: &'static BootInfo) -> ! {
-    proto_os::init();
+fn main(boot_info: &'static BootInfo) -> ! {
+    proto_os::init(boot_info);
 
     serial_println!("should_panic::verificacao_que_deve_falhar...\t");
     verificacao_que_deve_falhar();

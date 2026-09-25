@@ -1,27 +1,41 @@
 #![no_std]
 #![feature(abi_x86_interrupt)]
+#![feature(alloc_error_handler)]
 #![cfg_attr(test, no_main)]
 #![cfg_attr(test, feature(custom_test_frameworks))]
 #![cfg_attr(test, test_runner(crate::test_runner))]
 #![cfg_attr(test, reexport_test_harness_main = "test_main")]
 
+extern crate alloc;
+
+pub mod allocator;
 pub mod vga_buffer;
 pub mod serial;
 pub mod interrupts;
 pub mod keyboard;
+pub mod memory;
 pub mod shell;
 pub mod panic;
 
 /// Inicializa a infraestrutura de baixo nível do kernel: porta serial
-/// primeiro (FR-001), depois interrupções (IDT + PIC), com uma mensagem
-/// de diagnóstico na serial após cada etapa (FR-004). Chamada tanto pelo
-/// binário de produção (`main.rs`) quanto pelos pontos de entrada de
-/// teste (`lib.rs`, `main.rs` em modo de teste, `tests/*.rs`).
-pub fn init() {
+/// primeiro (FR-001), depois interrupções (IDT + PIC), depois memória
+/// física/paginação/heap (FR-011), com uma mensagem de diagnóstico na
+/// serial após cada etapa (FR-004, FR-018). Chamada tanto pelo binário
+/// de produção (`main.rs`) quanto pelos pontos de entrada de teste
+/// (`lib.rs`, `main.rs` em modo de teste, `tests/*.rs`).
+pub fn init(boot_info: &'static bootloader::BootInfo) {
     serial::init();
     serial_println!("[boot] iniciado");
     interrupts::init();
     serial_println!("[boot] interrupcoes ativas");
+    memory::init(boot_info);
+    let info = memory::info();
+    serial_println!(
+        "[boot] memoria inicializada: {} KiB utilizaveis, heap em {:#x} ({} KiB)",
+        info.usable_bytes / 1024,
+        info.heap_start,
+        info.heap_size / 1024
+    );
 }
 
 /// Um teste executável pelo executor de testes: qualquer função sem
@@ -105,8 +119,8 @@ pub fn test_panic_handler(info: &core::panic::PanicInfo) -> ! {
 bootloader::entry_point!(test_kernel_main);
 
 #[cfg(test)]
-fn test_kernel_main(_boot_info: &'static bootloader::BootInfo) -> ! {
-    init();
+fn test_kernel_main(boot_info: &'static bootloader::BootInfo) -> ! {
+    init(boot_info);
     test_main();
     panic::halt_loop();
 }
